@@ -48,6 +48,7 @@ let cancelSleep = null;
 let currentRunId = null;
 const allowedMessages = new Map(); // chat_id -> Set(message_id)
 const albumKeeper = new Map(); // `${chat_id}:${album_id}` -> message_id
+const lastMetrics = new Map(); // `${chat_id}:${message_id}` -> last snapshot to skip duplicates
 
 function boolToInt(value) {
   return typeof value === "boolean" ? (value ? 1 : 0) : null;
@@ -296,7 +297,7 @@ function initDb(dbPath) {
       run_id INTEGER NOT NULL,
       chat_id INTEGER NOT NULL,
       message_id INTEGER NOT NULL,
-      ts TEXT DEFAULT (datetime('now')),
+      ts INTEGER NOT NULL,
       view_count INTEGER,
       forward_count INTEGER,
       reply_count INTEGER,
@@ -306,7 +307,7 @@ function initDb(dbPath) {
       PRIMARY KEY(run_id, chat_id, message_id)
     );
 
-    CREATE INDEX IF NOT EXISTS idx_message_metrics_chat ON message_metrics(chat_id, message_id);
+    CREATE INDEX IF NOT EXISTS idx_message_metrics_chat ON message_metrics(chat_id, message_id, ts);
   `);
 
   const insertChannel = db.prepare(`
@@ -422,7 +423,7 @@ function initDb(dbPath) {
     INSERT INTO message_metrics (
       run_id, chat_id, message_id, ts, view_count, forward_count, reply_count, reactions_total, reactions_paid, reactions_free
     ) VALUES (
-      @run_id, @chat_id, @message_id, datetime('now'), @view_count, @forward_count, @reply_count, @reactions_total, @reactions_paid, @reactions_free
+      @run_id, @chat_id, @message_id, @ts, @view_count, @forward_count, @reply_count, @reactions_total, @reactions_paid, @reactions_free
     )
     ON CONFLICT(run_id, chat_id, message_id) DO UPDATE SET
       view_count = CASE
@@ -716,17 +717,31 @@ function upsertMessages(dbOps, messages) {
     });
     dbOps.upsertMessage(normalizedRow);
     if (currentRunId !== null) {
-      dbOps.upsertMessageMetric({
+      const last = lastMetrics.get(`${normalizedRow.chat_id}:${normalizedRow.message_id}`) || null;
+      const snapshot = {
         run_id: currentRunId,
         chat_id: normalizedRow.chat_id,
         message_id: normalizedRow.message_id,
+        ts: Math.floor(Date.now() / 1000),
         view_count: normalizedRow.view_count,
         forward_count: normalizedRow.forward_count,
         reply_count: normalizedRow.reply_count,
         reactions_total: normalizedRow.reactions_total,
         reactions_paid: normalizedRow.reactions_paid,
         reactions_free: normalizedRow.reactions_free
-      });
+      };
+      if (
+        !last ||
+        last.view_count !== snapshot.view_count ||
+        last.forward_count !== snapshot.forward_count ||
+        last.reply_count !== snapshot.reply_count ||
+        last.reactions_total !== snapshot.reactions_total ||
+        last.reactions_paid !== snapshot.reactions_paid ||
+        last.reactions_free !== snapshot.reactions_free
+      ) {
+        dbOps.upsertMessageMetric(snapshot);
+        lastMetrics.set(`${normalizedRow.chat_id}:${normalizedRow.message_id}`, snapshot);
+      }
     }
     chatIds.add(normalized.chat_id);
   }
