@@ -29,9 +29,9 @@ npm run init-accounts       # создать/перезаписать конфи
 
 ## Мини-setup
 0) Скопировать `.env.example` в `.env`, вписать свои `TELEGRAM_API_ID` и `TELEGRAM_API_HASH` (остальное можно оставить по умолчанию).
-1) Создать `data/public-search-accounts.json`: `npm run init-accounts -- --name acc --count 3` (пути db/files берутся из `config/paths.js` или override `--db/--files`, для перезаписи файла добавьте `--force`).
-2) Положить tdlib файлы в каталоги из `config/paths.js` или переопределить `TDLIB_*` (по умолчанию `data/tdlib/...`).
-3) `npm run public-search` — ссылки в `data/public-search-links.txt`, данные в SQLite `data/db/public-search.sqlite`.
+1) Создать `data/public-search-accounts.json`: `npm run init-accounts -- --name acc --count 3`. Скрипт добавит аккаунты (существующий файл не перезаписывается без `--force`), создаст отдельные каталоги для каждого (`data/tdlib/<name>/database|files`) и проведёт интерактивный логин (телефон/код/2FA), после логина проставит `username` в JSON. Флаг `--skip-login` — если нужно только сгенерировать конфиг.
+2) Положить tdlib файлы в каталоги из `config/paths.js` или переопределить `TDLIB_*` (по умолчанию `data/tdlib/<name>/...` для новых аккаунтов).
+3) `npm run public-search` — данные в SQLite `data/db/public-search.sqlite` (файл ссылок не пишется по умолчанию, включить можно env `PUBLIC_SEARCH_OUTPUT`).
 4) `npm run visualize-growth` и открыть `http://localhost:3100/growth-builder.html`.
 
 ## Автозапуск (systemd)

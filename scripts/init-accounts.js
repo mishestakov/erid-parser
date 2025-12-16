@@ -14,6 +14,7 @@
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { PUBLIC_SEARCH_ACCOUNTS_CONFIG, TDLIB_DATABASE_DIR, TDLIB_FILES_DIR } = require("../config/paths");
+const { createClientWithDirs, login } = require("../tdlib-helpers");
 
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -35,29 +36,37 @@ function parseArgs() {
 
 async function main() {
   const argv = parseArgs();
-  const baseDb = argv.db || TDLIB_DATABASE_DIR;
-  const baseFiles = argv.files || TDLIB_FILES_DIR;
+  const baseDbRoot = argv.db ? path.resolve(argv.db) : path.resolve(TDLIB_DATABASE_DIR, "..");
+  const baseFilesRoot = argv.files ? path.resolve(argv.files) : path.resolve(TDLIB_FILES_DIR, "..");
   const name = argv.name || "default";
   const count = Math.max(1, Number(argv.count) || 1);
   const force = Boolean(argv.force);
+  const skipLogin = Boolean(argv["skip-login"]);
 
-  try {
-    await fs.access(PUBLIC_SEARCH_ACCOUNTS_CONFIG);
-    if (!force) {
-      console.error(`Файл уже существует: ${PUBLIC_SEARCH_ACCOUNTS_CONFIG} (use --force для перезаписи)`);
-      process.exit(1);
+  let accounts = [];
+  if (!force) {
+    try {
+      const raw = await fs.readFile(PUBLIC_SEARCH_ACCOUNTS_CONFIG, "utf8");
+      const parsed = JSON.parse(raw);
+      accounts = Array.isArray(parsed) ? parsed : Array.isArray(parsed.accounts) ? parsed.accounts : [];
+      console.log(`Найдены существующие аккаунты: ${accounts.map((a) => a.name).join(", ") || "нет"}`);
+    } catch (_) {
+      // файла нет — начнём с пустого списка
     }
-  } catch (_) {
-    // ok, файла нет
+  }
+  if (force) {
+    accounts = [];
   }
 
-  const accounts = [];
+  const newAccounts = [];
   for (let i = 0; i < count; i += 1) {
     const accName = count === 1 ? name : `${name}${i + 1}`;
+    const dbDir = path.join(baseDbRoot, accName, "database");
+    const filesDir = path.join(baseFilesRoot, accName, "files");
     accounts.push({
       name: accName,
-      database_directory: path.resolve(baseDb),
-      files_directory: path.resolve(baseFiles),
+      database_directory: dbDir,
+      files_directory: filesDir,
       last_checked_at: null,
       daily_free: null,
       remaining_free: null,
@@ -67,6 +76,7 @@ async function main() {
       star_balance: null,
       skip_stars: false
     });
+    newAccounts.push(accName);
   }
 
   await fs.mkdir(path.dirname(PUBLIC_SEARCH_ACCOUNTS_CONFIG), { recursive: true });
@@ -75,6 +85,51 @@ async function main() {
   accounts.forEach((a) => {
     console.log(`- ${a.name}: db=${a.database_directory}, files=${a.files_directory}`);
   });
+
+  if (skipLogin) {
+    console.log("Пропущен логин (--skip-login).");
+    return;
+  }
+
+  for (const acc of accounts.slice(-newAccounts.length)) {
+    console.log(`\n[login] ${acc.name}: db=${acc.database_directory}, files=${acc.files_directory}`);
+    await fs.mkdir(acc.database_directory, { recursive: true });
+    await fs.mkdir(acc.files_directory, { recursive: true });
+    const client = createClientWithDirs({
+      databaseDirectory: acc.database_directory,
+      filesDirectory: acc.files_directory
+    });
+    try {
+      await login(client);
+      console.log(`[login] ${acc.name} ok`);
+      try {
+        const me = await client.invoke({ _: "getMe" });
+        if (me?.usernames?.active_usernames?.length) {
+          const username = me.usernames.active_usernames[0];
+          acc.username = username;
+          console.log(`[login] ${acc.name} username=@${username}`);
+        }
+      } catch (err) {
+        console.warn(`[login] ${acc.name} getMe failed: ${err.message || err}`);
+      }
+    } catch (err) {
+      console.error(`[login] ${acc.name} failed: ${err.message || err}`);
+    } finally {
+      try {
+        await client.close();
+        client.destroy();
+      } catch (_) {
+        // ignore
+      }
+    }
+  }
+
+  try {
+    await fs.writeFile(PUBLIC_SEARCH_ACCOUNTS_CONFIG, JSON.stringify(accounts, null, 2), "utf8");
+    console.log(`\nОбновлён конфиг с username: ${PUBLIC_SEARCH_ACCOUNTS_CONFIG}`);
+  } catch (err) {
+    console.warn(`Не удалось обновить конфиг после логина: ${err.message || err}`);
+  }
 }
 
 if (require.main === module) {

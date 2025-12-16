@@ -16,8 +16,6 @@ const TDLIB_PATH = process.env.TDLIB_PATH || null;
 
 const PUBLIC_SEARCH_DB_PATH =
   process.env.PUBLIC_SEARCH_DB_PATH || path.join(DATA_DIR, "db", "public-search.sqlite");
-const PUBLIC_SEARCH_OUTPUT =
-  process.env.PUBLIC_SEARCH_OUTPUT || path.join(DATA_DIR, "public-search-links.txt");
 const PUBLIC_SEARCH_ACCOUNTS_CONFIG =
   process.env.PUBLIC_SEARCH_ACCOUNTS_CONFIG || path.join(DATA_DIR, "public-search-accounts.json");
 const GROWTH_SETS_PATH =
@@ -31,7 +29,6 @@ module.exports = {
   TDLIB_FILES_DIR,
   TDLIB_PATH,
   PUBLIC_SEARCH_DB_PATH,
-  PUBLIC_SEARCH_OUTPUT,
   PUBLIC_SEARCH_ACCOUNTS_CONFIG,
   GROWTH_SETS_PATH
 };

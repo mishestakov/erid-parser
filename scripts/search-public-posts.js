@@ -32,7 +32,6 @@ const MESSAGE_ID_SHIFT = 20;
 const MESSAGE_ID_MULTIPLIER = 1 << MESSAGE_ID_SHIFT;
 const DEFAULT_DB_PATH = PUBLIC_SEARCH_DB_PATH;
 const DEFAULT_QUERY = process.env.PUBLIC_SEARCH_QUERY || "Сайт Страна X/Twitter Прислать новость/фото/видео Реклама на канале Помощь";
-const DEFAULT_OUTPUT = PUBLIC_SEARCH_OUTPUT;
 const ACCOUNTS_CONFIG_PATH = PUBLIC_SEARCH_ACCOUNTS_CONFIG;
 const STAR_SPEND = Number.isFinite(Number(process.env.PUBLIC_SEARCH_STAR_SPEND))
   ? Number(process.env.PUBLIC_SEARCH_STAR_SPEND)
@@ -821,12 +820,6 @@ function slugifyQuery(query) {
     .slice(0, 40) || "query";
 }
 
-function buildDefaultOutputPath(query) {
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const slug = slugifyQuery(query);
-  return path.join(TMP_DIR, `public-search-${slug}-${stamp}-links.txt`);
-}
-
 async function refreshOtherAccountsLimits(accounts, currentIndex) {
   for (let i = 0; i < accounts.length; i += 1) {
     if (i === currentIndex) continue;
@@ -926,13 +919,8 @@ function buildPostLink(chatId, messageId) {
   return null;
 }
 
-async function writeLinks(outputFile, links) {
-  if (!links || links.length === 0) return;
-  await fs.appendFile(outputFile, links.join("\n") + "\n", "utf8");
-}
-
 async function runSearchLoop(client, options) {
-  const { query, limit, starCount, delayMs, outputFile, dbOps, targets, stopSignal } = options;
+  const { query, limit, starCount, delayMs, dbOps, targets, stopSignal } = options;
   let offset = "";
   let page = 0;
   let total = 0;
@@ -984,15 +972,8 @@ async function runSearchLoop(client, options) {
       await ensureChatMeta(client, dbOps, chatId);
     }
 
-    const links = [];
     let oldestTs = null;
     for (const message of messages) {
-      const chatId = message?.chat_id;
-      const messageId = decodeMessageId(message?.id) ?? message?.id;
-      const link = buildPostLink(chatId, messageId);
-      if (link) {
-        links.push(link);
-      }
       if (Number.isFinite(message?.date)) {
         if (oldestTs === null || message.date < oldestTs) {
           oldestTs = message.date;
@@ -1003,10 +984,9 @@ async function runSearchLoop(client, options) {
     allowMessages(messages);
     upsertMessages(dbOps, messages);
 
-    await writeLinks(outputFile, links);
-    total += links.length;
+    total += messages.length;
     const oldestIso = oldestTs ? new Date(oldestTs * 1000).toISOString() : "n/a";
-    console.log(`[page ${page}] messages=${messages.length} links=${links.length} total=${total} oldest=${oldestIso}`);
+    console.log(`[page ${page}] messages=${messages.length} total=${total} oldest=${oldestIso}`);
 
     if (res?.are_limits_exceeded) {
       console.warn("Search limits exceeded; stopping.");
@@ -1027,13 +1007,11 @@ async function main() {
   const query = DEFAULT_QUERY;
   const limit = Math.min(MAX_LIMIT, Math.max(1, DEFAULT_LIMIT));
   const delayMs = DEFAULT_DELAY_MS;
-  const outputFile = DEFAULT_OUTPUT || buildDefaultOutputPath(query);
   const dbPath = DEFAULT_DB_PATH;
   const accounts = ensureDefaultAccount(await readAccounts());
   let accountIndex = 0;
 
   await ensureDirectories();
-  await fs.mkdir(path.dirname(outputFile), { recursive: true });
   await fs.mkdir(path.dirname(dbPath), { recursive: true });
   const dbOps = initDb(dbPath);
   const targets = new Set();
@@ -1063,7 +1041,6 @@ async function main() {
     await login(client);
     console.log(`[init] account -> ${currentAccount.name || "default"}`);
     console.log(`[init] query   -> ${query}`);
-    console.log(`[init] links   -> ${outputFile}`);
     console.log(`[init] db      -> ${dbPath}`);
     console.log(`[init] accounts config -> ${ACCOUNTS_CONFIG_PATH}`);
     while (!stopRequested) {
