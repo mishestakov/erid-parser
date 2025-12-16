@@ -30,7 +30,7 @@ const MESSAGE_ID_SHIFT = 20;
 const MESSAGE_ID_MULTIPLIER = 1 << MESSAGE_ID_SHIFT;
 const DEFAULT_DB_PATH = PUBLIC_SEARCH_DB_PATH;
 const DEFAULT_QUERY =
-  process.env.PUBLIC_SEARCH_QUERY || "Сайт Страна X/Twitter Прислать новость/фото/видео Реклама на канале Помощь";
+  process.env.PUBLIC_SEARCH_QUERY || "erid";
 const ACCOUNTS_CONFIG_PATH = PUBLIC_SEARCH_ACCOUNTS_CONFIG;
 const STAR_SPEND = Number.isFinite(Number(process.env.PUBLIC_SEARCH_STAR_SPEND))
   ? Number(process.env.PUBLIC_SEARCH_STAR_SPEND)
