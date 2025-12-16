@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Подборка постов</title>
+    <link rel="stylesheet" href="growth.css" />
+  </head>
+  <body>
+    <main class="grid-builder">
+      <aside class="card">
+        <div class="saved-header">
+          <h3>Сохранённые подборки</h3>
+          <button id="new-search-btn" type="button">Новая подборка</button>
+        </div>
+        <div id="saved-list" class="saved-list"></div>
+      </aside>
+      <div class="card builder-form">
+        <h2 id="builder-title">Новая подборка</h2>
+        <div class="form-grid">
+          <label>Название
+            <input id="search-name" type="text" placeholder="Например: подозрительные ступеньки" />
+          </label>
+          <label>IDs (chat_id TAB message_id)
+            <textarea id="ids-input" rows="4" placeholder="-100... \t 123"></textarea>
+          </label>
+          <div class="row">
+            <label>Дата от <input id="date-from" type="datetime-local" /></label>
+            <label>Дата до <input id="date-to" type="datetime-local" /></label>
+          </div>
+          <div class="row">
+            <label>Views от <input id="views-min" type="number" /></label>
+            <label>Views до <input id="views-max" type="number" /></label>
+            <label>Лимит <input id="limit-input" type="number" value="5000" /></label>
+          </div>
+          <div class="row">
+            <label>Мин. точек <input id="min-points" type="number" value="0" /></label>
+          </div>
+          <label>Сортировка по паттерну
+            <select id="sort-pattern-select"></select>
+          </label>
+        </div>
+        <div class="builder-actions">
+          <span id="preview-total" class="muted"></span>
+          <div class="spacer"></div>
+          <button id="save-open-btn" type="button" class="primary">Сохранить</button>
+          <button id="open-saved-btn" type="button" class="secondary" disabled>Смотреть</button>
+        </div>
+        <div id="status-bar" class="muted" style="margin-top:8px;"></div>
+      </div>
+    </main>
+    <script src="growth-builder.js"></script>
+  </body>
+</html>

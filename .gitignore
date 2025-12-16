@@ -1,0 +1,7 @@
+node_modules/
+tmp/
+tdlib/
+*.sqlite
+*.log
+*.ndjson
+.env

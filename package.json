@@ -1,0 +1,15 @@
+{
+  "name": "erid-parser",
+  "version": "0.1.0",
+  "description": "TDLib public search collector and growth visualizer (SQLite).",
+  "main": "scripts/search-public-posts.js",
+  "scripts": {
+    "public-search": "node scripts/search-public-posts.js",
+    "visualize-growth": "node scripts/metrics-visualize.js",
+    "init-accounts": "node scripts/init-accounts.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "tdl": "latest"
+  }
+}

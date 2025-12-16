@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Просмотр кривых</title>
+    <link rel="stylesheet" href="growth.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+  </head>
+  <body>
+    <main>
+      <div class="controls">
+        <div class="control-row" style="align-items:center;gap:12px;">
+          <a class="secondary" href="/growth-builder.html" style="padding:8px 10px; text-decoration:none;">← К подборам</a>
+          <span id="active-info" class="pill muted"></span>
+          <label>Сортировка
+            <select id="viewer-sort-select"></select>
+          </label>
+          <label>Шкала X (px/мин)
+            <input id="scale-input" type="number" step="0.5" min="0.1" value="1" style="width:90px;" />
+          </label>
+          <button id="filter-btn" type="button" class="secondary">Фильтр</button>
+          <span id="filter-pill" class="pill muted" style="display:none;"></span>
+          <div class="spacer"></div>
+          <button id="prev-btn" type="button">← Prev</button>
+          <span id="position-label">0/0</span>
+          <button id="next-btn" type="button">Next →</button>
+          <span class="hint">стрелки, 1..8 — паттерн, 0 — OK</span>
+        </div>
+        <div class="control-row">
+          <div id="pattern-table"></div>
+        </div>
+        <div class="meta" id="meta"></div>
+      </div>
+      <section class="chart-wrap">
+        <canvas id="chart"></canvas>
+      </section>
+      <section class="table-wrap">
+        <table id="metrics-table">
+          <thead>
+            <tr>
+              <th>run</th>
+              <th>started_at</th>
+              <th>views</th>
+              <th>fwd</th>
+              <th>replies</th>
+              <th>reactions</th>
+              <th>Δviews</th>
+              <th>Δreactions</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+      <div id="status-bar" class="muted" style="margin-top:8px;"></div>
+    </main>
+    <div id="filter-modal" class="modal hidden">
+      <div class="modal-card">
+        <h3>Фильтр по отметкам</h3>
+        <label>Паттерн
+          <select id="filter-pattern"></select>
+        </label>
+        <label>Показать
+          <select id="filter-mode">
+            <option value="all">Все</option>
+            <option value="flagged">С отмеченным паттерном</option>
+            <option value="not_flagged">Без этого паттерна</option>
+          </select>
+        </label>
+        <div class="modal-actions">
+          <button id="filter-apply" class="primary">Применить</button>
+          <button id="filter-clear" class="secondary">Сбросить</button>
+          <button id="filter-close" class="secondary">Закрыть</button>
+        </div>
+      </div>
+    </div>
+    <script src="growth-viewer.js"></script>
+  </body>
+</html>
