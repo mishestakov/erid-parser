@@ -17,9 +17,7 @@ const {
 } = require("../tdlib-helpers");
 const {
   PUBLIC_SEARCH_DB_PATH,
-  PUBLIC_SEARCH_OUTPUT,
   PUBLIC_SEARCH_ACCOUNTS_CONFIG,
-  TMP_DIR,
   TDLIB_DATABASE_DIR,
   TDLIB_FILES_DIR
 } = require("../config/paths");
@@ -31,7 +29,8 @@ const DEFAULT_PERIOD_MS = Number(process.env.PUBLIC_SEARCH_PERIOD_MS || 1 * 1000
 const MESSAGE_ID_SHIFT = 20;
 const MESSAGE_ID_MULTIPLIER = 1 << MESSAGE_ID_SHIFT;
 const DEFAULT_DB_PATH = PUBLIC_SEARCH_DB_PATH;
-const DEFAULT_QUERY = process.env.PUBLIC_SEARCH_QUERY || "Сайт Страна X/Twitter Прислать новость/фото/видео Реклама на канале Помощь";
+const DEFAULT_QUERY =
+  process.env.PUBLIC_SEARCH_QUERY || "Сайт Страна X/Twitter Прислать новость/фото/видео Реклама на канале Помощь";
 const ACCOUNTS_CONFIG_PATH = PUBLIC_SEARCH_ACCOUNTS_CONFIG;
 const STAR_SPEND = Number.isFinite(Number(process.env.PUBLIC_SEARCH_STAR_SPEND))
   ? Number(process.env.PUBLIC_SEARCH_STAR_SPEND)
@@ -40,7 +39,6 @@ const STAR_SPEND = Number.isFinite(Number(process.env.PUBLIC_SEARCH_STAR_SPEND))
 const chatUsernames = new Map(); // chat_id -> username|null
 const chatFetches = new Map(); // chat_id -> Promise<void>
 let shuttingDown = false;
-const updateStats = new Map(); // TEMP: счётчик апдейтов по типу
 let runNumber = 0;
 let currentAccount = null;
 let cancelSleep = null;
@@ -169,12 +167,6 @@ function sanitizeAccount(acc) {
     skip_stars: Boolean(acc.skip_stars),
     star_balance: Number.isFinite(acc.star_balance) ? acc.star_balance : null
   };
-}
-
-function trackUpdateStat(update) {
-  const key = update?._ || "unknown";
-  const prev = updateStats.get(key) || 0;
-  updateStats.set(key, prev + 1);
 }
 
 function aggregateReactions(interactionInfo) {
@@ -766,7 +758,6 @@ function attachUpdateProcessor(client, dbOps, targets) {
     if (relatedChatId === null || !targets.has(relatedChatId)) return;
 
     try {
-      trackUpdateStat(update); // TEMP: метрика количества апдейтов по типам
       if (update.chat) {
         applyChatToDb(dbOps, update.chat);
       }
@@ -809,66 +800,6 @@ async function logLimits(client) {
   } catch (err) {
     console.warn(`[run ${runNumber}] getPublicPostSearchLimits failed: ${err.message || err}`);
     return null;
-  }
-}
-
-function slugifyQuery(query) {
-  return query
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/gi, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40) || "query";
-}
-
-async function refreshOtherAccountsLimits(accounts, currentIndex) {
-  for (let i = 0; i < accounts.length; i += 1) {
-    if (i === currentIndex) continue;
-    const acc = accounts[i];
-    try {
-      await ensureAccountDirs(acc);
-      const tmpClient = createClientWithDirs({
-        databaseDirectory: acc.database_directory,
-        filesDirectory: acc.files_directory
-      });
-      await login(tmpClient);
-      const me = await tmpClient.invoke({ _: "getMe" });
-      const limits = await tmpClient.invoke({ _: "getPublicPostSearchLimits" });
-      const nextFree = Number(limits?.next_free_query_in);
-      const starCost = typeof limits?.star_count === "string" ? Number(limits.star_count) : Number(limits?.star_count);
-      let starBalance = null;
-      try {
-        const incoming = await tmpClient.invoke({
-          _: "getStarTransactions",
-          owner_id: { _: "messageSenderUser", user_id: me.id },
-          subscription_id: "",
-          direction: { _: "transactionDirectionIncoming" },
-          offset: "",
-          limit: 1
-        });
-        starBalance = Number.isFinite(incoming?.star_amount?.star_count) ? incoming.star_amount.star_count : null;
-      } catch (err) {
-        console.warn(`Не удалось получить звёзды для ${acc.name || "default"}: ${err.message || err}`);
-      }
-      acc.last_checked_at = new Date().toISOString();
-      acc.daily_free = limits?.daily_free_query_count ?? acc.daily_free ?? null;
-      acc.remaining_free = Number.isFinite(limits?.remaining_free_query_count)
-        ? limits.remaining_free_query_count
-        : acc.remaining_free ?? null;
-      if (Number.isFinite(nextFree) && nextFree > 0) {
-        acc.next_free_in = nextFree;
-        acc.free_at = computeFreeAt(limits);
-      }
-      acc.star_cost_per_query = Number.isFinite(starCost) ? starCost : acc.star_cost_per_query ?? null;
-      acc.star_balance = Number.isFinite(starBalance) ? starBalance : acc.star_balance ?? null;
-      try {
-        await tmpClient.close();
-        tmpClient.destroy();
-      } catch (_) {
-        // ignore
-      }
-    } catch (err) {
-      console.warn(`Не удалось обновить лимиты для ${acc.name || "default"}: ${err.message || err}`);
-    }
   }
 }
 
@@ -1044,7 +975,7 @@ async function main() {
     console.log(`[init] db      -> ${dbPath}`);
     console.log(`[init] accounts config -> ${ACCOUNTS_CONFIG_PATH}`);
     while (!stopRequested) {
-      // предварительно узнаем лимиты текущего аккаунта и фиксируем free_at
+      // предварительно узнаем лимиты текущего аккаунта и фиксируем free_at/звёзды
       const preLimits = await logLimits(client);
       let starBalance = null;
       try {
@@ -1076,59 +1007,51 @@ async function main() {
       currentAccount.star_cost_per_query = Number.isFinite(starCost) ? starCost : null;
       currentAccount.star_balance = Number.isFinite(starBalance) ? starBalance : currentAccount.star_balance ?? null;
 
-      // узнаем лимиты остальных аккаунтов, чтобы не смотреть на устаревшие значения
-      if (accounts.length > 1) {
-        await refreshOtherAccountsLimits(accounts, accountIndex);
-      }
       await writeAccounts(accounts);
 
-      const currentFree = Number.isFinite(currentAccount.remaining_free) ? currentAccount.remaining_free : getRemainingFree(preLimits);
+      // выбор режима: free/звёзды/переключение/сон
       const now = Date.now();
-
-      // если на текущем фри 0, пробуем переключиться на следующий аккаунт с готовым free (по порядку)
-      if (currentFree <= 0 && accounts.length > 1) {
-        const nextFreeIdx = findNextFreeAccountIndex(accounts, accountIndex + 1);
-        if (nextFreeIdx !== null && nextFreeIdx !== accountIndex) {
-          console.log(
-            `[run ${runNumber + 1}] switching to account ${accounts[nextFreeIdx].name || "default"} (free quota ready)`
-          );
-          if (detachUpdates) {
-            try {
-              detachUpdates();
-            } catch (_) {
-              // ignore
-            }
-          }
+      const currentFree = Number.isFinite(currentAccount.remaining_free)
+        ? currentAccount.remaining_free
+        : getRemainingFree(preLimits);
+      const freeReadyIdx = currentFree > 0 ? accountIndex : findNextFreeAccountIndex(accounts, accountIndex + 1);
+      if (freeReadyIdx !== null && freeReadyIdx !== accountIndex) {
+        console.log(
+          `[run ${runNumber + 1}] switching to account ${accounts[freeReadyIdx].name || "default"} (free quota ready)`
+        );
+        if (detachUpdates) {
           try {
-            await client.close();
-            client.destroy();
+            detachUpdates();
           } catch (_) {
-            // ignore
+            /* ignore */
           }
-          accountIndex = nextFreeIdx;
-          currentAccount = accounts[accountIndex];
-          await ensureAccountDirs(currentAccount);
-          client = createClientWithDirs({
-            databaseDirectory: currentAccount.database_directory,
-            filesDirectory: currentAccount.files_directory
-          });
-          detachUpdates = attachUpdateProcessor(client, dbOps, targets);
-          await login(client);
-          continue; // начать цикл заново уже с новым аккаунтом
         }
+        try {
+          await client.close();
+          client.destroy();
+        } catch (_) {
+          /* ignore */
+        }
+        accountIndex = freeReadyIdx;
+        currentAccount = accounts[accountIndex];
+        await ensureAccountDirs(currentAccount);
+        client = createClientWithDirs({
+          databaseDirectory: currentAccount.database_directory,
+          filesDirectory: currentAccount.files_directory
+        });
+        detachUpdates = attachUpdateProcessor(client, dbOps, targets);
+        await login(client);
+        continue;
       }
 
-      const anyFreeReady = findNextFreeAccountIndex(accounts, accountIndex) !== null;
+      const freeReady = freeReadyIdx !== null && freeReadyIdx === accountIndex && currentFree > 0;
       let useStars = false;
-
-      if (!anyFreeReady) {
+      if (!freeReady) {
         const starIdx = findStarAccountIndex(accounts, STAR_SPEND);
         if (starIdx === null) {
           const nextTs = nextFreeTimestamp(accounts);
           const sleepMs = nextTs ? Math.max(1000, nextTs - now) : DEFAULT_PERIOD_MS;
-          console.log(
-            `[run ${runNumber + 1}] free=0 у всех и звёзд < ${STAR_SPEND}, спим ${sleepMs} мс до ближайшего free`
-          );
+          console.log(`[run ${runNumber + 1}] free=0 у всех и звёзд нет, спим ${sleepMs} мс до ближайшего free`);
           await delayWithStop(sleepMs, stopSignal);
           continue;
         }
@@ -1140,14 +1063,14 @@ async function main() {
             try {
               detachUpdates();
             } catch (_) {
-              // ignore
+              /* ignore */
             }
           }
           try {
             await client.close();
             client.destroy();
           } catch (_) {
-            // ignore
+            /* ignore */
           }
           accountIndex = starIdx;
           currentAccount = accounts[accountIndex];
@@ -1164,9 +1087,7 @@ async function main() {
         if (!Number.isFinite(starCost) || starCost <= 0) {
           const nextTs = nextFreeTimestamp(accounts);
           const sleepMs = nextTs ? Math.max(1000, nextTs - now) : DEFAULT_PERIOD_MS;
-          console.log(
-            `[run ${runNumber + 1}] на звёздном аккаунте < ${STAR_SPEND} звёзд, спим ${sleepMs} мс до free`
-          );
+          console.log(`[run ${runNumber + 1}] на звёздном аккаунте звёзд нет, спим ${sleepMs} мс до free`);
           await delayWithStop(sleepMs, stopSignal);
           continue;
         }
@@ -1176,7 +1097,6 @@ async function main() {
       const starCountForRun = useStars ? (currentAccount.star_cost_per_query || STAR_SPEND) : 0;
 
       runNumber += 1;
-      updateStats.clear();
       currentRunId = null;
       console.log(`[run ${runNumber}] start (account=${currentAccount.name || "default"}${useStars ? ", stars=1" : ""})`);
       try {
@@ -1192,21 +1112,16 @@ async function main() {
         limit,
         starCount: starCountForRun,
         delayMs,
-        outputFile,
         dbOps,
         targets,
         stopSignal
       });
-      console.log(`[run ${runNumber}] Готово. Всего ссылок: ${total}`);
-      if (updateStats.size > 0) {
-        const stats = Object.fromEntries(updateStats.entries());
-        console.log(`[run ${runNumber}] updates stats:`, stats);
-      }
+      console.log(`[run ${runNumber}] Готово. Всего сообщений: ${total}`);
       if (balanceLow) {
         console.warn(`[run ${runNumber}] остановка поиска: на аккаунте нет звёзд, ждём бесплатные лимиты`);
         currentAccount.skip_stars = true;
       }
-      const limits = await logLimits(client);
+      const limits = limitsExceeded || balanceLow || useStars ? await logLimits(client) : preLimits;
       const limitsZero =
         limitsExceeded ||
         (limits && typeof limits.remaining_free_query_count === "number" && limits.remaining_free_query_count <= 0);
@@ -1220,23 +1135,6 @@ async function main() {
       const nextFreeAfter = Number(limits?.next_free_query_in);
       const starCostAfter =
         typeof limits?.star_count === "string" ? Number(limits.star_count) : Number(limits?.star_count);
-      let starBalanceAfter = currentAccount.star_balance ?? null;
-      try {
-        const meAfter = await client.invoke({ _: "getMe" });
-        const incomingAfter = await client.invoke({
-          _: "getStarTransactions",
-          owner_id: { _: "messageSenderUser", user_id: meAfter.id },
-          subscription_id: "",
-          direction: { _: "transactionDirectionIncoming" },
-          offset: "",
-          limit: 1
-        });
-        starBalanceAfter = Number.isFinite(incomingAfter?.star_amount?.star_count)
-          ? incomingAfter.star_amount.star_count
-          : starBalanceAfter;
-      } catch (err) {
-        console.warn(`[run ${runNumber}] не удалось обновить баланс звёзд: ${err.message || err}`);
-      }
       currentAccount.last_checked_at = new Date().toISOString();
       currentAccount.daily_free =
         limits?.daily_free_query_count ?? (Number.isFinite(currentAccount.daily_free) ? currentAccount.daily_free : null);
@@ -1254,8 +1152,8 @@ async function main() {
         : Number.isFinite(currentAccount.star_cost_per_query)
           ? currentAccount.star_cost_per_query
           : null;
-      currentAccount.star_balance = Number.isFinite(starBalanceAfter)
-        ? starBalanceAfter
+      currentAccount.star_balance = Number.isFinite(starBalance)
+        ? starBalance
         : Number.isFinite(currentAccount.star_balance)
           ? currentAccount.star_balance
           : null;
