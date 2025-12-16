@@ -28,9 +28,6 @@ const MAX_LIMIT = 100;
 const DEFAULT_LIMIT = Number(process.env.PUBLIC_SEARCH_LIMIT || MAX_LIMIT);
 const DEFAULT_DELAY_MS = Number(process.env.PUBLIC_SEARCH_DELAY_MS || 500);
 const DEFAULT_PERIOD_MS = Number(process.env.PUBLIC_SEARCH_PERIOD_MS || 1 * 1000);
-const DEFAULT_MAX_PAGES = Number.isFinite(Number(process.env.PUBLIC_SEARCH_MAX_PAGES))
-  ? Math.max(1, Number(process.env.PUBLIC_SEARCH_MAX_PAGES))
-  : null; // нет лимита по умолчанию
 const MESSAGE_ID_SHIFT = 20;
 const MESSAGE_ID_MULTIPLIER = 1 << MESSAGE_ID_SHIFT;
 const DEFAULT_DB_PATH = PUBLIC_SEARCH_DB_PATH;
@@ -920,7 +917,7 @@ async function writeLinks(outputFile, links) {
 }
 
 async function runSearchLoop(client, options) {
-  const { query, limit, starCount, delayMs, outputFile, dbOps, targets, stopSignal, maxPages } = options;
+  const { query, limit, starCount, delayMs, outputFile, dbOps, targets, stopSignal } = options;
   let offset = "";
   let page = 0;
   let total = 0;
@@ -928,10 +925,6 @@ async function runSearchLoop(client, options) {
   let balanceLow = false;
 
   while (!stopSignal()) {
-    if (Number.isFinite(maxPages) && page >= maxPages) {
-      console.log(`[search] достигнут лимит страниц ${maxPages}, останавливаемся`);
-      break;
-    }
     if (page > 0) {
       await delayWithStop(delayMs, stopSignal);
     }
@@ -1210,8 +1203,7 @@ async function main() {
         outputFile,
         dbOps,
         targets,
-        stopSignal,
-        maxPages: DEFAULT_MAX_PAGES
+        stopSignal
       });
       console.log(`[run ${runNumber}] Готово. Всего ссылок: ${total}`);
       if (updateStats.size > 0) {

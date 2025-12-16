@@ -24,7 +24,7 @@ npm run init-accounts       # создать/перезаписать конфи
 ## Основные переменные окружения
 - Базовый каталог: `DATA_DIR` (по умолчанию `./data`).
 - TDLib: `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TDLIB_PATH` (опциональный путь к tdjson), `TDLIB_DATABASE_DIR`, `TDLIB_FILES_DIR`.
-- Публичный поиск: `PUBLIC_SEARCH_QUERY`, `PUBLIC_SEARCH_LIMIT`, `PUBLIC_SEARCH_DELAY_MS`, `PUBLIC_SEARCH_MAX_PAGES` (по умолчанию без лимита), `PUBLIC_SEARCH_STAR_SPEND`, `PUBLIC_SEARCH_OUTPUT`, `PUBLIC_SEARCH_DB_PATH`, `PUBLIC_SEARCH_ACCOUNTS_CONFIG`.
+- Публичный поиск: `PUBLIC_SEARCH_QUERY`, `PUBLIC_SEARCH_LIMIT`, `PUBLIC_SEARCH_DELAY_MS`, `PUBLIC_SEARCH_STAR_SPEND`, `PUBLIC_SEARCH_OUTPUT`, `PUBLIC_SEARCH_DB_PATH`, `PUBLIC_SEARCH_ACCOUNTS_CONFIG`.
 - Визуализатор: `PORT` (по умолчанию 3100), `PUBLIC_SEARCH_DB_PATH`, `GROWTH_SETS_PATH`.
 
 ## Мини-setup
