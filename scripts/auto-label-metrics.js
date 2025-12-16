@@ -11,9 +11,8 @@
  */
 
 const fs = require("node:fs");
-const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
-const { PUBLIC_SEARCH_DB_PATH, TMP_DIR } = require("../config/paths");
+const { PUBLIC_SEARCH_DB_PATH, GROWTH_SETS_PATH } = require("../config/paths");
 
 function parseArgs(argv) {
   const args = {};
@@ -36,7 +35,7 @@ function parseArgs(argv) {
 const argv = parseArgs(process.argv.slice(2));
 const DB_PATH =
   argv.db || PUBLIC_SEARCH_DB_PATH;
-const SETS_PATH = argv["sets-path"] || process.env.GROWTH_SETS_PATH || path.join(TMP_DIR, "growth-sets.json");
+const SETS_PATH = argv["sets-path"] || GROWTH_SETS_PATH;
 const SET_FILTER = argv.set || argv["set-name"] || null;
 const MIN_POINTS = Number(argv["min-points"] || process.env.AUTO_MIN_POINTS || 50);
 const LIMIT = Number(argv.limit) || null;

@@ -5,12 +5,12 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const url = require("node:url");
 const { DatabaseSync } = require("node:sqlite");
-const { PUBLIC_SEARCH_DB_PATH, TMP_DIR } = require("../config/paths");
+const { PUBLIC_SEARCH_DB_PATH, GROWTH_SETS_PATH } = require("../config/paths");
 
 const STATIC_DIR = path.join(__dirname, "..", "visualizer");
 const PORT = Number(process.env.PORT || 3100);
 const DB_PATH = PUBLIC_SEARCH_DB_PATH;
-const SETS_PATH = process.env.GROWTH_SETS_PATH || path.join(TMP_DIR, "growth-sets.json");
+const SETS_PATH = GROWTH_SETS_PATH;
 const DEFAULT_PATTERN_TAGS = [
   "zero_start_late_spike",
   "linear_growth",

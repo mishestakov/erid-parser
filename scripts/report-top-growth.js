@@ -12,14 +12,13 @@
  *
  * Запуск:
  *   node scripts/report-top-growth.js [dbPath]
- * По умолчанию db = tmp/public-search-new.sqlite или PUBLIC_SEARCH_DB_PATH.
+ * По умолчанию db = PUBLIC_SEARCH_DB_PATH.
  */
 
-const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
-const { PUBLIC_SEARCH_DB_PATH, TMP_DIR } = require("../config/paths");
+const { PUBLIC_SEARCH_DB_PATH } = require("../config/paths");
 
-const DEFAULT_DB = PUBLIC_SEARCH_DB_PATH || path.join(TMP_DIR, "public-search.sqlite");
+const DEFAULT_DB = PUBLIC_SEARCH_DB_PATH;
 
 function toSeconds(ts) {
   return Math.floor(new Date(ts).getTime() / 1000);
