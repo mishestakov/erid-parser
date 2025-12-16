@@ -30,7 +30,7 @@ const DEFAULT_DELAY_MS = Number(process.env.PUBLIC_SEARCH_DELAY_MS || 500);
 const DEFAULT_PERIOD_MS = Number(process.env.PUBLIC_SEARCH_PERIOD_MS || 1 * 1000);
 const DEFAULT_MAX_PAGES = Number.isFinite(Number(process.env.PUBLIC_SEARCH_MAX_PAGES))
   ? Math.max(1, Number(process.env.PUBLIC_SEARCH_MAX_PAGES))
-  : 5;
+  : null; // нет лимита по умолчанию
 const MESSAGE_ID_SHIFT = 20;
 const MESSAGE_ID_MULTIPLIER = 1 << MESSAGE_ID_SHIFT;
 const DEFAULT_DB_PATH = PUBLIC_SEARCH_DB_PATH;
