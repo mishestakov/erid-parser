@@ -45,7 +45,6 @@ let cancelSleep = null;
 let currentRunId = null;
 const allowedMessages = new Map(); // chat_id -> Set(message_id)
 const albumKeeper = new Map(); // `${chat_id}:${album_id}` -> message_id
-const lastMetrics = new Map(); // `${chat_id}:${message_id}` -> last snapshot to skip duplicates
 
 function boolToInt(value) {
   return typeof value === "boolean" ? (value ? 1 : 0) : null;
@@ -708,7 +707,6 @@ function upsertMessages(dbOps, messages) {
     });
     dbOps.upsertMessage(normalizedRow);
     if (currentRunId !== null) {
-      const last = lastMetrics.get(`${normalizedRow.chat_id}:${normalizedRow.message_id}`) || null;
       const snapshot = {
         run_id: currentRunId,
         chat_id: normalizedRow.chat_id,
@@ -721,18 +719,7 @@ function upsertMessages(dbOps, messages) {
         reactions_paid: normalizedRow.reactions_paid,
         reactions_free: normalizedRow.reactions_free
       };
-      if (
-        !last ||
-        last.view_count !== snapshot.view_count ||
-        last.forward_count !== snapshot.forward_count ||
-        last.reply_count !== snapshot.reply_count ||
-        last.reactions_total !== snapshot.reactions_total ||
-        last.reactions_paid !== snapshot.reactions_paid ||
-        last.reactions_free !== snapshot.reactions_free
-      ) {
-        dbOps.upsertMessageMetric(snapshot);
-        lastMetrics.set(`${normalizedRow.chat_id}:${normalizedRow.message_id}`, snapshot);
-      }
+      dbOps.upsertMessageMetric(snapshot);
     }
     chatIds.add(normalized.chat_id);
   }
