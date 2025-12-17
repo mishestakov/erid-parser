@@ -36,6 +36,10 @@ const STAR_SPEND = Number.isFinite(Number(process.env.PUBLIC_SEARCH_STAR_SPEND))
   ? Number(process.env.PUBLIC_SEARCH_STAR_SPEND)
   : 10;
 
+const DEFAULT_DAILY_FREE = Number.isFinite(Number(process.env.PUBLIC_SEARCH_DEFAULT_DAILY_FREE))
+  ? Number(process.env.PUBLIC_SEARCH_DEFAULT_DAILY_FREE)
+  : 10;
+
 const chatUsernames = new Map(); // chat_id -> username|null
 const chatFetches = new Map(); // chat_id -> Promise<void>
 let shuttingDown = false;
@@ -129,6 +133,15 @@ function nextFreeTimestamp(accounts) {
 
 function sanitizeAccount(acc) {
   if (!acc) return null;
+  const hasLastLimits = acc.last_limits && typeof acc.last_limits === "object";
+  const nextFreeIn = Number.isFinite(acc.next_free_in)
+    ? acc.next_free_in
+    : Number.isFinite(acc.next_free_query_in)
+      ? acc.next_free_query_in
+      : Number(acc.last_limits?.next_free_query_in);
+  const dailyFree = Number.isFinite(acc.daily_free)
+    ? acc.daily_free
+    : acc.last_limits?.daily_free_query_count ?? null;
   const starCost =
     Number.isFinite(acc.star_cost_per_query)
       ? acc.star_cost_per_query
@@ -137,28 +150,36 @@ function sanitizeAccount(acc) {
         : typeof acc.last_limits?.star_count === "string"
           ? Number(acc.last_limits.star_count)
           : Number(acc.last_limits?.star_count);
-  const remainingFree = Number.isFinite(acc.remaining_free)
+  const remainingFreeRaw = Number.isFinite(acc.remaining_free)
     ? acc.remaining_free
     : Number.isFinite(acc.last_remaining_free)
       ? acc.last_remaining_free
-      : getRemainingFree(acc.last_limits);
-  const nextFreeIn = Number.isFinite(acc.next_free_in)
-    ? acc.next_free_in
-    : Number.isFinite(acc.next_free_query_in)
-      ? acc.next_free_query_in
-      : Number(acc.last_limits?.next_free_query_in);
+      : hasLastLimits
+        ? getRemainingFree(acc.last_limits)
+        : null;
   const freeAt =
     acc.free_at ||
     (Number.isFinite(nextFreeIn) && nextFreeIn > 0 ? new Date(Date.now() + nextFreeIn * 1000).toISOString() : null);
+
+  const hasNoLimitInfo = !Number.isFinite(remainingFreeRaw) && !Number.isFinite(nextFreeIn) && !freeAt;
+  const wasNeverChecked = !acc.last_checked_at && !Number.isFinite(nextFreeIn) && !freeAt;
+  const shouldDefaultFree =
+    hasNoLimitInfo || (wasNeverChecked && Number.isFinite(remainingFreeRaw) && remainingFreeRaw <= 0);
+  const remainingFree = Number.isFinite(remainingFreeRaw)
+    ? remainingFreeRaw
+    : shouldDefaultFree
+      ? Number.isFinite(dailyFree)
+        ? dailyFree
+        : DEFAULT_DAILY_FREE
+      : null;
+  const normalizedDailyFree = Number.isFinite(dailyFree) ? dailyFree : DEFAULT_DAILY_FREE;
 
   return {
     name: acc.name || "default",
     database_directory: acc.database_directory,
     files_directory: acc.files_directory,
     last_checked_at: acc.last_checked_at || null,
-    daily_free: Number.isFinite(acc.daily_free)
-      ? acc.daily_free
-      : acc.last_limits?.daily_free_query_count ?? null,
+    daily_free: normalizedDailyFree,
     remaining_free: Number.isFinite(remainingFree) ? remainingFree : null,
     next_free_in: Number.isFinite(nextFreeIn) ? nextFreeIn : null,
     free_at: freeAt,
