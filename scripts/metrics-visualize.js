@@ -2,6 +2,7 @@
 
 const http = require("node:http");
 const fs = require("node:fs/promises");
+const fsSync = require("node:fs");
 const path = require("node:path");
 const url = require("node:url");
 const { DatabaseSync } = require("node:sqlite");
@@ -20,6 +21,8 @@ const DEFAULT_PATTERN_TAGS = [
   "micro_steps"
 ];
 const PATTERN_KEYS = [...DEFAULT_PATTERN_TAGS, "other"];
+
+fsSync.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
 const db = new DatabaseSync(DB_PATH);
 db.exec(`
@@ -63,6 +66,49 @@ db.exec(`
 const HAS_MESSAGE_LABELS = Boolean(
   db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='message_labels';`).get()
 );
+
+async function collectDbStats() {
+  const disk =
+    typeof fs.statfs === "function"
+      ? await fs
+          .statfs(path.dirname(DB_PATH))
+          .then((stat) => {
+            const block = Number(stat.bsize || stat.f_bsize || stat.blockSize || 4096);
+            const total = Number(stat.blocks);
+            const free = Number(stat.bavail ?? stat.bfree);
+            return Number.isFinite(total) && Number.isFinite(free)
+              ? { total_bytes: total * block, free_bytes: free * block }
+              : null;
+          })
+          .catch(() => null)
+      : null;
+
+  const dbFile = await fs
+    .stat(DB_PATH)
+    .then((st) => ({ path: DB_PATH, size_bytes: Number(st.size) || 0 }))
+    .catch(() => ({ path: DB_PATH, size_bytes: null }));
+
+  let tables = [];
+  try {
+    tables = db
+      .prepare(
+        `
+        SELECT name, SUM(pgsize) AS size_bytes
+        FROM dbstat
+        WHERE name NOT LIKE 'sqlite_%'
+        GROUP BY name
+        ORDER BY size_bytes DESC
+        LIMIT 3
+      `
+      )
+      .all()
+      .map((r) => ({ name: r.name, size_bytes: Number(r.size_bytes) || 0 }));
+  } catch (_) {
+    tables = [];
+  }
+
+  return { disk, db: dbFile, tables };
+}
 
 function sendJson(res, status, payload) {
   res.writeHead(status, { "Content-Type": "application/json" });
@@ -299,6 +345,16 @@ function handlePatternTags(req, res) {
     }
   }
   return sendJson(res, 200, { tags: Array.from(tags) });
+}
+
+async function handleDbStats(req, res) {
+  try {
+    const stats = await collectDbStats();
+    return sendJson(res, 200, stats);
+  } catch (err) {
+    console.error("db stats failed", err);
+    return sendJson(res, 500, { error: err.message || "db stats failed" });
+  }
 }
 
 async function loadSavedSets() {
@@ -677,6 +733,9 @@ const server = http.createServer(async (req, res) => {
     }
     if (pathname === "/api/pattern-tags" && req.method === "GET") {
       return handlePatternTags(req, res);
+    }
+    if (pathname === "/api/db-stats" && req.method === "GET") {
+      return handleDbStats(req, res);
     }
     if (pathname === "/api/list" && req.method === "POST") {
       const body = await readJsonBody(req);

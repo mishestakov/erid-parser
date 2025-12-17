@@ -219,6 +219,18 @@ tr:hover td {
   color: #e7edf5;
   border: 1px solid #243447;
 }
+.mini-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.stats-inline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
 
 .danger {
   background: #ef4444;

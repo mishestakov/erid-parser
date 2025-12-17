@@ -24,6 +24,8 @@
   const openSavedBtn = document.getElementById("open-saved-btn");
   const previewTotalEl = document.getElementById("preview-total");
   const statusBar = document.getElementById("status-bar");
+  const dbStatsEl = document.getElementById("db-stats");
+  const refreshStatsBtn = document.getElementById("refresh-stats-btn");
 
   let savedSets = [];
   let activeSavedId = null;
@@ -31,6 +33,19 @@
 
   function setStatus(msg) {
     if (statusBar) statusBar.textContent = msg || "";
+  }
+
+  function formatBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes < 0) return "—";
+    const units = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
+    let val = bytes;
+    let idx = 0;
+    while (val >= 1000 && idx < units.length - 1) {
+      val /= 1024;
+      idx += 1;
+    }
+    const precision = val >= 10 || idx === 0 ? 0 : 1;
+    return `${val.toFixed(precision)} ${units[idx]}`;
   }
 
   function parseIdsTextarea() {
@@ -237,10 +252,32 @@
     window.location.href = `/growth-viewer.html?id=${encodeURIComponent(activeSavedId)}`;
   }
 
+  async function loadDbStats() {
+    if (!dbStatsEl) return;
+    dbStatsEl.textContent = "Загружаю…";
+    try {
+      const data = await fetchJson("/api/db-stats");
+      const disk = data.disk || {};
+      const db = data.db || {};
+      const tables = Array.isArray(data.tables) ? data.tables : [];
+      const top = tables
+        .slice(0, 3)
+        .map((t) => `${t.name}: ${formatBytes(t.size_bytes)}`)
+        .join("; ");
+      dbStatsEl.textContent = `Диск: ${formatBytes(disk.free_bytes)} из ${formatBytes(disk.total_bytes)} | БД: ${formatBytes(
+        db.size_bytes
+      )} | Таблицы: ${top || "нет данных"}`;
+    } catch (err) {
+      console.error(err);
+      dbStatsEl.textContent = "Не удалось получить статистику";
+    }
+  }
+
   // bind events
   newBtn?.addEventListener("click", resetForm);
   saveOpenBtn?.addEventListener("click", handleSaveAndOpen);
   openSavedBtn?.addEventListener("click", handleOpenSaved);
+  refreshStatsBtn?.addEventListener("click", loadDbStats);
 
   [idsInput, dateFromInput, dateToInput, viewsMinInput, viewsMaxInput, limitInput, sortPatternSelect, searchNameInput]
     .filter(Boolean)
@@ -259,4 +296,5 @@
   loadPatternTags();
   loadSavedSets();
   resetForm();
+  loadDbStats();
 })();
