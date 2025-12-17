@@ -163,14 +163,13 @@ function sanitizeAccount(acc) {
 
   const hasNoLimitInfo = !Number.isFinite(remainingFreeRaw) && !Number.isFinite(nextFreeIn) && !freeAt;
   const wasNeverChecked = !acc.last_checked_at && !Number.isFinite(nextFreeIn) && !freeAt;
-  const shouldDefaultFree =
-    hasNoLimitInfo || (wasNeverChecked && Number.isFinite(remainingFreeRaw) && remainingFreeRaw <= 0);
-  const remainingFree = Number.isFinite(remainingFreeRaw)
-    ? remainingFreeRaw
-    : shouldDefaultFree
-      ? Number.isFinite(dailyFree)
-        ? dailyFree
-        : DEFAULT_DAILY_FREE
+  const shouldDefaultFree = hasNoLimitInfo || wasNeverChecked;
+  const remainingFree = shouldDefaultFree
+    ? Number.isFinite(dailyFree)
+      ? dailyFree
+      : DEFAULT_DAILY_FREE
+    : Number.isFinite(remainingFreeRaw)
+      ? remainingFreeRaw
       : null;
   const normalizedDailyFree = Number.isFinite(dailyFree) ? dailyFree : DEFAULT_DAILY_FREE;
 
@@ -811,6 +810,77 @@ async function logLimits(client) {
   }
 }
 
+async function fetchStarBalance(client, label = `run ${runNumber + 1}`) {
+  const prefix = `[${label}]`;
+  try {
+    const me = await client.invoke({ _: "getMe" });
+    const incoming = await client.invoke({
+      _: "getStarTransactions",
+      owner_id: { _: "messageSenderUser", user_id: me.id },
+      subscription_id: "",
+      direction: { _: "transactionDirectionIncoming" },
+      offset: "",
+      limit: 1
+    });
+    return Number.isFinite(incoming?.star_amount?.star_count) ? incoming.star_amount.star_count : null;
+  } catch (err) {
+    console.warn(`${prefix} не удалось получить баланс звёзд: ${err.message || err}`);
+    return null;
+  }
+}
+
+async function refreshLimitsForAccounts(accounts, currentIndex, currentClient) {
+  if (!Array.isArray(accounts) || accounts.length === 0) return;
+  console.log("[refresh] обновляем лимиты всех аккаунтов...");
+  for (let i = 0; i < accounts.length; i += 1) {
+    const acc = accounts[i];
+    let client = currentClient;
+    let shouldClose = false;
+    try {
+      if (i !== currentIndex || !client) {
+        await ensureAccountDirs(acc);
+        client = createClientWithDirs({
+          databaseDirectory: acc.database_directory,
+          filesDirectory: acc.files_directory
+        });
+        await login(client);
+        shouldClose = true;
+      }
+      console.log(`[refresh] check ${acc.name || "default"}`);
+      const limits = await logLimits(client);
+      const starBalance = await fetchStarBalance(client, "refresh");
+      const nextFree = Number(limits?.next_free_query_in);
+      const starCost =
+        typeof limits?.star_count === "string" ? Number(limits.star_count) : Number(limits?.star_count);
+      acc.last_checked_at = new Date().toISOString();
+      acc.daily_free = limits?.daily_free_query_count ?? acc.daily_free ?? DEFAULT_DAILY_FREE;
+      acc.remaining_free = Number.isFinite(limits?.remaining_free_query_count)
+        ? limits.remaining_free_query_count
+        : acc.remaining_free ?? null;
+      if (Number.isFinite(nextFree) && nextFree > 0) {
+        acc.next_free_in = nextFree;
+        acc.free_at = computeFreeAt(limits);
+      }
+      acc.star_cost_per_query = Number.isFinite(starCost) ? starCost : acc.star_cost_per_query ?? null;
+      if (Number.isFinite(starBalance)) {
+        acc.star_balance = starBalance;
+      }
+    } catch (err) {
+      console.warn(`[refresh] ${acc.name || "default"}: ${err.message || err}`);
+    } finally {
+      if (shouldClose && client && client !== currentClient) {
+        try {
+          await client.close();
+          client.destroy();
+        } catch (_) {
+          /* ignore */
+        }
+      }
+    }
+  }
+  await writeAccounts(accounts);
+}
+
 async function ensureChatMeta(client, dbOps, chatId) {
   if (!Number.isFinite(chatId)) return;
   if (chatUsernames.has(chatId)) return;
@@ -985,21 +1055,7 @@ async function main() {
     while (!stopRequested) {
       // предварительно узнаем лимиты текущего аккаунта и фиксируем free_at/звёзды
       const preLimits = await logLimits(client);
-      let starBalance = null;
-      try {
-        const me = await client.invoke({ _: "getMe" });
-        const incoming = await client.invoke({
-          _: "getStarTransactions",
-          owner_id: { _: "messageSenderUser", user_id: me.id },
-          subscription_id: "",
-          direction: { _: "transactionDirectionIncoming" },
-          offset: "",
-          limit: 1
-        });
-        starBalance = Number.isFinite(incoming?.star_amount?.star_count) ? incoming.star_amount.star_count : null;
-      } catch (err) {
-        console.warn(`[run ${runNumber + 1}] не удалось получить баланс звёзд: ${err.message || err}`);
-      }
+      const starBalance = await fetchStarBalance(client);
       // обновляем плоские поля
       const nextFree = Number(preLimits?.next_free_query_in);
       const starCost = typeof preLimits?.star_count === "string" ? Number(preLimits.star_count) : Number(preLimits?.star_count);
@@ -1019,10 +1075,18 @@ async function main() {
 
       // выбор режима: free/звёзды/переключение/сон
       const now = Date.now();
-      const currentFree = Number.isFinite(currentAccount.remaining_free)
+      let currentFree = Number.isFinite(currentAccount.remaining_free)
         ? currentAccount.remaining_free
         : getRemainingFree(preLimits);
-      const freeReadyIdx = currentFree > 0 ? accountIndex : findNextFreeAccountIndex(accounts, accountIndex + 1);
+      let freeReadyIdx = currentFree > 0 ? accountIndex : findNextFreeAccountIndex(accounts, accountIndex + 1);
+      if (freeReadyIdx === null) {
+        console.log(`[run ${runNumber + 1}] free=0 по данным конфига, перепроверяем лимиты всех аккаунтов...`);
+        await refreshLimitsForAccounts(accounts, accountIndex, client);
+        currentFree = Number.isFinite(currentAccount.remaining_free)
+          ? currentAccount.remaining_free
+          : getRemainingFree(preLimits);
+        freeReadyIdx = currentFree > 0 ? accountIndex : findNextFreeAccountIndex(accounts, accountIndex + 1);
+      }
       if (freeReadyIdx !== null && freeReadyIdx !== accountIndex) {
         console.log(
           `[run ${runNumber + 1}] switching to account ${accounts[freeReadyIdx].name || "default"} (free quota ready)`
