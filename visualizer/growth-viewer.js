@@ -51,6 +51,7 @@
   let selectedManual = {};
   let currentSet = null;
   let filterState = { pattern: "", mode: "all" };
+  let currentChannelId = null;
   let lastChannelId = null;
   let viewYMaxForChannel = null;
 
@@ -58,6 +59,7 @@
     const params = new URLSearchParams(window.location.search);
     return {
       id: params.get("id"),
+      channel: params.get("channel"),
       sort: params.get("sort") || "",
       pattern: params.get("pattern") || "",
       mode: params.get("mode") || "all",
@@ -68,6 +70,7 @@
   function updateUrl() {
     const params = new URLSearchParams();
     if (currentSet?.id) params.set("id", currentSet.id);
+    else if (currentChannelId) params.set("channel", currentChannelId);
     const sortVal = viewerSortSelect?.value || "";
     if (sortVal) params.set("sort", sortVal);
     if (filterState.pattern) params.set("pattern", filterState.pattern);
@@ -448,14 +451,22 @@
   async function loadSet() {
     const params = readParams();
     const id = params.id;
-    if (!id) {
-      setStatus("Не указан id подборки");
-      return;
-    }
+    const channelParam = Number(params.channel);
     try {
-      setStatus("Загружаю подборку…");
-      const data = await fetchJson(`/api/sets/${encodeURIComponent(id)}`);
-      currentSet = data.set;
+      setStatus("Загружаю данные…");
+      let data = null;
+      if (id) {
+        data = await fetchJson(`/api/sets/${encodeURIComponent(id)}`);
+        currentSet = data.set;
+        currentChannelId = null;
+      } else if (Number.isFinite(channelParam)) {
+        data = await fetchJson(`/api/channel-items?chat_id=${channelParam}`);
+        currentSet = data.set;
+        currentChannelId = channelParam;
+      } else {
+        setStatus("Не указан источник данных");
+        return;
+      }
       const sortParam = params.sort || "";
       filterState = { pattern: params.pattern || "", mode: params.mode || "all" };
       if (filterPatternSelect) filterPatternSelect.value = filterState.pattern || "";

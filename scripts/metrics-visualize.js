@@ -347,6 +347,75 @@ function handlePatternTags(req, res) {
   return sendJson(res, 200, { tags: Array.from(tags) });
 }
 
+function handleBloggers(req, res) {
+  const rows =
+    db
+      .prepare(
+        `
+        SELECT ps.chat_id AS id,
+               ps.active_username AS u,
+               ps.member_count AS s,
+               COUNT(cm.message_id) AS p,
+               AVG(cm.view_count) AS v
+        FROM public_search ps
+        LEFT JOIN channel_messages cm ON cm.chat_id = ps.chat_id
+        WHERE ps.active_username IS NOT NULL AND ps.active_username != ''
+        GROUP BY ps.chat_id, ps.active_username, ps.member_count
+        ORDER BY p DESC
+      `
+      )
+      .all() || [];
+
+  const items = rows.map((r) => ({
+    id: r.id,
+    u: r.u,
+    s: Number.isFinite(r.s) ? r.s : null,
+    p: Number.isFinite(r.p) ? r.p : 0,
+    v: Number.isFinite(r.v) ? Math.round(r.v) : null
+  }));
+
+  return sendJson(res, 200, { items });
+}
+
+function handleChannelItems(req, res, query) {
+  const chatId = Number(query.chat_id);
+  if (!Number.isFinite(chatId)) return sendJson(res, 400, { error: "chat_id required" });
+
+  const meta =
+    db
+      .prepare("SELECT active_username AS u, title FROM public_search WHERE chat_id = ? LIMIT 1")
+      .get(chatId) || null;
+
+  const rows =
+    db
+      .prepare(
+        `
+        SELECT message_id, message_date, view_count
+        FROM channel_messages
+        WHERE chat_id = ?
+        ORDER BY message_date ASC
+      `
+      )
+      .all(chatId) || [];
+
+  const items = rows.map((r) => ({
+    chat_id: chatId,
+    message_id: r.message_id,
+    message_date: r.message_date,
+    view_count: r.view_count
+  }));
+
+  const name = meta?.u ? `@${meta.u}` : meta?.title || `channel ${chatId}`;
+  return sendJson(res, 200, {
+    set: {
+      id: `channel-${chatId}`,
+      name,
+      total: items.length,
+      items
+    }
+  });
+}
+
 async function handleDbStats(req, res) {
   try {
     const stats = await collectDbStats();
@@ -736,6 +805,12 @@ const server = http.createServer(async (req, res) => {
     }
     if (pathname === "/api/db-stats" && req.method === "GET") {
       return handleDbStats(req, res);
+    }
+    if (pathname === "/api/bloggers" && req.method === "GET") {
+      return handleBloggers(req, res);
+    }
+    if (pathname === "/api/channel-items" && req.method === "GET") {
+      return handleChannelItems(req, res, query);
     }
     if (pathname === "/api/list" && req.method === "POST") {
       const body = await readJsonBody(req);
