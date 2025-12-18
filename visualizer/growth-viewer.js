@@ -27,7 +27,6 @@
   const metaEl = document.getElementById("meta");
   const tableBody = document.querySelector("#metrics-table tbody");
   const canvas = document.getElementById("chart");
-  const scaleInput = document.getElementById("scale-input");
   const prevBtn = document.getElementById("prev-btn");
   const nextBtn = document.getElementById("next-btn");
   const positionLabel = document.getElementById("position-label");
@@ -52,10 +51,8 @@
   let selectedManual = {};
   let currentSet = null;
   let filterState = { pattern: "", mode: "all" };
-  let pixelsPerMinute = 1;
-  let lastPoints = [];
   let lastChannelId = null;
-  let yMaxForChannel = null;
+  let viewYMaxForChannel = null;
 
   function readParams() {
     const params = new URLSearchParams(window.location.search);
@@ -64,8 +61,7 @@
       sort: params.get("sort") || "",
       pattern: params.get("pattern") || "",
       mode: params.get("mode") || "all",
-      idx: Number(params.get("i")) || 0,
-      scale: Number(params.get("scale"))
+      idx: Number(params.get("i")) || 0
     };
   }
 
@@ -77,7 +73,6 @@
     if (filterState.pattern) params.set("pattern", filterState.pattern);
     if (filterState.mode && filterState.mode !== "all") params.set("mode", filterState.mode);
     if (sampleIndex > 0) params.set("i", sampleIndex);
-    if (Number.isFinite(pixelsPerMinute) && pixelsPerMinute !== 1) params.set("scale", pixelsPerMinute);
     const qs = params.toString();
     const newUrl = qs ? `${window.location.pathname}?${qs}` : window.location.pathname;
     window.history.replaceState(null, "", newUrl);
@@ -99,55 +94,114 @@
     return d > 0 ? `+${d}` : `${d}`;
   }
 
-  function updateChart(points, chatId) {
-    const ctx = canvas.getContext("2d");
-    const targetHeight = Math.max(200, Math.round(window.innerHeight * 0.7));
-    canvas.height = targetHeight;
-    const pxPerMin = Number.isFinite(pixelsPerMinute) && pixelsPerMinute > 0 ? pixelsPerMinute : 1;
-    let domainMax = 1;
-    if (points.length > 0) {
-      const xs = points.map((p) => p.x).filter((v) => Number.isFinite(v));
-      const maxX = Math.max(...xs);
-      domainMax = Math.max(maxX, 1);
+  function buildSeries(metrics, baseMs) {
+    const viewPoints = [];
+    const likePoints = [];
+    const forwardPoints = [];
+    if (baseMs !== null) {
+      viewPoints.push({ x: 0, y: 0 });
+      likePoints.push({ x: 0, y: 0 });
+      forwardPoints.push({ x: 0, y: 0 });
     }
-    const spanForWidth = Math.max(domainMax, 100); // фиксируем 100 мин как базу, чтобы масштаб всегда влиял на ширину
-    const targetWidth = Math.min(20000, Math.max(200, Math.round(spanForWidth * pxPerMin)));
-    canvas.width = targetWidth;
-    canvas.style.width = `${targetWidth}px`;
+
+    for (const m of metrics) {
+      if (m.ts_ms === null || m.ts_ms === undefined) continue;
+      const deltaMin = baseMs !== null ? Math.max((m.ts_ms - baseMs) / 60000, 0) : 0;
+      const xVal = Number.isFinite(deltaMin) ? deltaMin : 0;
+
+      if (m.view_count !== null && m.view_count !== undefined) {
+        viewPoints.push({ x: xVal, y: m.view_count });
+      }
+      if (m.reactions_total !== null && m.reactions_total !== undefined) {
+        likePoints.push({ x: xVal, y: m.reactions_total });
+      }
+      if (m.forward_count !== null && m.forward_count !== undefined) {
+        forwardPoints.push({ x: xVal, y: m.forward_count });
+      }
+    }
+
+    const lastView = viewPoints.length ? viewPoints[viewPoints.length - 1].y : 0;
+    const engagementMaxFromViews = lastView ? Math.round(lastView * 0.005) : 0; // 0.5% от финальных просмотров
+    const engagementMaxFromData = Math.max(
+      0,
+      ...likePoints.map((p) => (Number.isFinite(p.y) ? p.y : 0)),
+      ...forwardPoints.map((p) => (Number.isFinite(p.y) ? p.y : 0))
+    );
+    const engagementMax = Math.max(1, engagementMaxFromViews, engagementMaxFromData);
+
+    return { viewPoints, likePoints, forwardPoints, engagementMax };
+  }
+
+  function updateChart(series, chatId) {
+    const { viewPoints = [], likePoints = [], forwardPoints = [], engagementMax = null } = series || {};
+    const ctx = canvas.getContext("2d");
+    const targetHeight = Math.max(220, Math.round(window.innerHeight * 0.65));
+    canvas.height = targetHeight;
+    canvas.style.height = `${targetHeight}px`;
+    canvas.style.width = "100%";
+
+    const xs = [...viewPoints, ...likePoints, ...forwardPoints].map((p) => p.x).filter((v) => Number.isFinite(v));
+    const domainMax = xs.length ? Math.max(...xs, 1) : 1;
 
     // Y-scale: keep per-channel; recompute when channel changes
-    let yMax = yMaxForChannel;
+    let yMax = viewYMaxForChannel;
     if (chatId !== lastChannelId) {
-      const ys = points.map((p) => p.y).filter((v) => Number.isFinite(v));
+      const ys = viewPoints.map((p) => p.y).filter((v) => Number.isFinite(v));
       const maxY = ys.length ? Math.max(...ys) : 0;
       yMax = maxY > 0 ? Math.ceil(maxY * 1.05) : null;
-      yMaxForChannel = yMax;
+      viewYMaxForChannel = yMax;
       lastChannelId = chatId;
     }
 
+    const engagementMaxVal = Number.isFinite(engagementMax) && engagementMax > 0 ? engagementMax : undefined;
+
     if (chart) chart.destroy();
+    const datasets = [
+      {
+        label: "Просмотры",
+        data: viewPoints,
+        borderColor: "#00c2a8",
+        tension: 0.25,
+        spanGaps: true,
+        pointRadius: 0,
+        yAxisID: "views"
+      },
+      {
+        label: "Лайки (накоп.)",
+        data: likePoints,
+        borderColor: "#ff7eb6",
+        tension: 0.25,
+        spanGaps: true,
+        pointRadius: 0,
+        yAxisID: "engagement"
+      },
+      {
+        label: "Форварды (накоп.)",
+        data: forwardPoints,
+        borderColor: "#ffa53d",
+        tension: 0.25,
+        spanGaps: true,
+        pointRadius: 0,
+        yAxisID: "engagement"
+      }
+    ];
+
     chart = new Chart(ctx, {
       type: "line",
       data: {
-        datasets: [
-          {
-            label: "Views",
-            data: points,
-            borderColor: "#00c2a8",
-            tension: 0.25,
-            spanGaps: true
-          }
-        ]
+        datasets
       },
       options: {
-        responsive: false,
+        responsive: true,
+        maintainAspectRatio: false,
         parsing: false,
         animation: false,
+        interaction: { mode: "nearest", intersect: false },
         scales: {
           x: {
             type: "linear",
             min: 0,
-            max: Math.max(domainMax, 100),
+            max: Math.max(domainMax, 1),
             title: {
               display: true,
               text: "минуты от публикации"
@@ -159,9 +213,18 @@
             },
             offset: false
           },
-          y: {
+          views: {
+            position: "left",
             beginAtZero: true,
             suggestedMax: yMax || undefined,
+            ticks: { callback: (value) => `${value}` }
+          },
+          engagement: {
+            position: "right",
+            beginAtZero: true,
+            max: engagementMaxVal,
+            grid: { drawOnChartArea: false },
+            title: { display: true, text: "лайки/репосты в минуту" },
             ticks: { callback: (value) => `${value}` }
           }
         }
@@ -282,20 +345,12 @@
       if (baseMs === null && metrics.length > 0) {
         baseMs = metrics.find((m) => Number.isFinite(m.ts_ms))?.ts_ms ?? null;
       }
-      const points = [];
-      if (baseMs !== null) points.push({ x: 0, y: 0 });
-      for (const m of metrics) {
-        if (m.ts_ms !== null && m.view_count !== null && m.view_count !== undefined) {
-          const deltaMin = baseMs !== null ? Math.max((m.ts_ms - baseMs) / 60000, 0) : 0;
-          points.push({ x: Math.round(deltaMin), y: m.view_count });
-        }
-      }
-      lastPoints = points;
+      const series = buildSeries(metrics, baseMs);
       const link = data.message?.message_link || `${item.chat_id}/${item.message_id}`;
       metaEl.innerHTML = `<div><strong>${link}</strong></div><div>message_date: ${
         msgDateMs ? new Date(msgDateMs).toLocaleString() : ""
       }</div>`;
-      updateChart(lastPoints, item.chat_id);
+      updateChart(series, item.chat_id);
       renderTable(metrics, msgDateMs);
       const labelsInfo = await loadLabels(item.chat_id, item.message_id);
       renderPatternTable(labelsInfo.autoScores, labelsInfo.manual);
@@ -310,8 +365,7 @@
     if (sampleIndex < 0 || sampleIndex >= sampleList.length) {
       setStatus("Нет данных в подборке");
       positionLabel.textContent = "0/0";
-      lastPoints = [];
-      updateChart([], null);
+      updateChart({ viewPoints: [], likePoints: [], forwardPoints: [], engagementMax: null }, null);
       tableBody.innerHTML = "";
       return;
     }
@@ -407,10 +461,6 @@
       if (filterPatternSelect) filterPatternSelect.value = filterState.pattern || "";
       if (filterModeSelect) filterModeSelect.value = filterState.mode || "all";
       if (sortParam && viewerSortSelect) viewerSortSelect.value = sortParam;
-      if (Number.isFinite(params.scale) && params.scale > 0 && scaleInput) {
-        pixelsPerMinute = params.scale;
-        scaleInput.value = params.scale;
-      }
       // enrich items with manual/auto placeholders
       baseSample = (currentSet?.items || []).map((it) => ({
         ...it,
@@ -467,13 +517,6 @@
   }
 
   viewerSortSelect?.addEventListener("change", () => applyFilterAndSort(viewerSortSelect.value || ""));
-  scaleInput?.addEventListener("change", () => {
-    const val = Number(scaleInput.value);
-    pixelsPerMinute = Number.isFinite(val) && val > 0 ? val : 1;
-    scaleInput.value = pixelsPerMinute;
-    if (lastPoints.length) updateChart(lastPoints);
-    updateUrl();
-  });
   prevBtn?.addEventListener("click", goPrev);
   nextBtn?.addEventListener("click", goNext);
 
