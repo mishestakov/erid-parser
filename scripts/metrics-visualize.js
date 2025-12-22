@@ -6,12 +6,18 @@ const fsSync = require("node:fs");
 const path = require("node:path");
 const url = require("node:url");
 const { DatabaseSync } = require("node:sqlite");
+const { createClickhouseClient } = require("../clickhouse");
 const { PUBLIC_SEARCH_DB_PATH, GROWTH_SETS_PATH } = require("../config/paths");
 
 const STATIC_DIR = path.join(__dirname, "..", "visualizer");
 const PORT = Number(process.env.PORT || 3100);
 const DB_PATH = PUBLIC_SEARCH_DB_PATH;
 const SETS_PATH = GROWTH_SETS_PATH;
+const CLICKHOUSE_METRICS_TABLE = process.env.CLICKHOUSE_METRICS_TABLE || "message_metrics";
+const CLICKHOUSE_READ_CHUNK = Number(process.env.CLICKHOUSE_READ_CHUNK || 1000);
+const MINPOINTS_SCAN_LIMIT = Number.isFinite(Number(process.env.CLICKHOUSE_MINPOINTS_SCAN_LIMIT))
+  ? Number(process.env.CLICKHOUSE_MINPOINTS_SCAN_LIMIT)
+  : 50000;
 const DEFAULT_PATTERN_TAGS = [
   "zero_start_late_spike",
   "linear_growth",
@@ -66,6 +72,59 @@ db.exec(`
 const HAS_MESSAGE_LABELS = Boolean(
   db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='message_labels';`).get()
 );
+const clickhouse = createClickhouseClient();
+const SAFE_METRICS_TABLE = (() => {
+  if (!/^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)?$/.test(CLICKHOUSE_METRICS_TABLE)) {
+    throw new Error(`Invalid CLICKHOUSE_METRICS_TABLE: ${CLICKHOUSE_METRICS_TABLE}`);
+  }
+  return CLICKHOUSE_METRICS_TABLE;
+})();
+
+function metricsKey(chatId, messageId) {
+  return `${chatId}:${messageId}`;
+}
+
+async function fetchMetricsSeries(chatId, messageId) {
+  const sql = `
+    SELECT
+      run_id,
+      toUnixTimestamp(ts) AS ts,
+      view_count,
+      forward_count,
+      reply_count,
+      reactions_total,
+      reactions_paid,
+      reactions_free
+    FROM ${SAFE_METRICS_TABLE}
+    WHERE chat_id = ${Math.trunc(chatId)} AND message_id = ${Math.trunc(messageId)}
+    ORDER BY ts ASC, run_id ASC
+  `;
+  return clickhouse.queryJsonEachRow(sql);
+}
+
+async function fetchMetricsCounts(ids) {
+  const map = new Map();
+  if (!Array.isArray(ids) || ids.length === 0) return map;
+  const chunkSize = Number.isFinite(CLICKHOUSE_READ_CHUNK) && CLICKHOUSE_READ_CHUNK > 0 ? CLICKHOUSE_READ_CHUNK : 1000;
+  for (let i = 0; i < ids.length; i += chunkSize) {
+    const chunk = ids.slice(i, i + chunkSize);
+    const tuples = chunk
+      .map((row) => `(${Math.trunc(row.chat_id)},${Math.trunc(row.message_id)})`)
+      .join(",");
+    const sql = `
+      SELECT chat_id, message_id, count() AS cnt
+      FROM ${SAFE_METRICS_TABLE}
+      WHERE (chat_id, message_id) IN (${tuples})
+      GROUP BY chat_id, message_id
+    `;
+    const rows = await clickhouse.queryJsonEachRow(sql);
+    for (const r of rows) {
+      const key = metricsKey(r.chat_id, r.message_id);
+      map.set(key, Number(r.cnt) || 0);
+    }
+  }
+  return map;
+}
 
 async function collectDbStats() {
   const disk =
@@ -186,7 +245,7 @@ function extractManualFlags(row) {
   return flags;
 }
 
-function handleMetrics(req, res, query) {
+async function handleMetrics(req, res, query) {
   const chatId = Number(query.chat_id);
   const messageId = Number(query.message_id);
   if (!Number.isFinite(chatId) || !Number.isFinite(messageId)) {
@@ -204,18 +263,13 @@ function handleMetrics(req, res, query) {
     )
     .get(chatId, messageId);
 
-  const metrics = db
-    .prepare(
-      `
-      SELECT mm.run_id, mm.ts, mm.view_count, mm.forward_count, mm.reply_count, mm.reactions_total, mm.reactions_paid, mm.reactions_free,
-             r.started_at
-      FROM message_metrics mm
-      JOIN runs r ON r.run_id = mm.run_id
-      WHERE mm.chat_id = ? AND mm.message_id = ?
-      ORDER BY mm.ts ASC
-    `
-    )
-    .all(chatId, messageId);
+  let metrics = [];
+  try {
+    metrics = await fetchMetricsSeries(chatId, messageId);
+  } catch (err) {
+    console.error("ClickHouse metrics fetch failed", err);
+    return sendJson(res, 502, { error: "ClickHouse unavailable" });
+  }
 
   const runs = db
     .prepare("SELECT run_id, started_at, account_name, limits_exceeded FROM runs ORDER BY run_id ASC")
@@ -624,11 +678,13 @@ function collectLabelData(rows, labelerFilter) {
   return HAS_MESSAGE_LABELS ? collectLabelsFromMessageLabels(rows, labelerFilter) : collectLabelsFromFlags(rows);
 }
 
-function fetchMessagesForSet(options) {
+async function fetchMessagesForSet(options) {
   const { ids, minViews, maxViews, fromDate, toDate, limit, minPoints } = options;
+  const useMinPoints = Number.isFinite(minPoints) && minPoints > 0;
   let rows = [];
+  let total = 0;
   if (ids.length > 0) {
-    return withTempIds(ids, (table) => {
+    const result = withTempIds(ids, (table) => {
       const conditions = [];
       const params = [];
       if (Number.isFinite(minViews)) {
@@ -647,12 +703,7 @@ function fetchMessagesForSet(options) {
         conditions.push("cm.message_date <= ?");
         params.push(toDate);
       }
-      if (Number.isFinite(minPoints)) {
-        conditions.push(
-          `(SELECT COUNT(*) FROM message_metrics mm WHERE mm.chat_id = cm.chat_id AND mm.message_id = cm.message_id) >= ?`
-        );
-        params.push(minPoints);
-      }
+      // minPoints handled via ClickHouse
       const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
       const limitClause = Number.isFinite(limit) && limit > 0 ? `LIMIT ${limit}` : "";
       const baseSql = `
@@ -673,6 +724,22 @@ function fetchMessagesForSet(options) {
       const totalRow = db.prepare(`SELECT COUNT(1) as cnt ${baseSql}`).get(...params);
       return { rows, total: totalRow?.cnt || 0 };
     });
+    rows = result.rows;
+    total = result.total;
+    if (!useMinPoints) return { rows, total };
+    let counts;
+    try {
+      counts = await fetchMetricsCounts(ids);
+    } catch (err) {
+      console.error("ClickHouse points fetch failed", err);
+      return { rows: [], total: 0 };
+    }
+    rows = rows.filter((row) => (counts.get(metricsKey(row.chat_id, row.message_id)) || 0) >= minPoints);
+    total = ids.reduce((acc, row) => {
+      const key = metricsKey(row.chat_id, row.message_id);
+      return acc + ((counts.get(key) || 0) >= minPoints ? 1 : 0);
+    }, 0);
+    return { rows, total };
   }
 
   const conditions = [];
@@ -694,10 +761,7 @@ function fetchMessagesForSet(options) {
     params.push(toDate);
   }
   if (Number.isFinite(minPoints)) {
-    conditions.push(
-      `(SELECT COUNT(*) FROM message_metrics mm WHERE mm.chat_id = cm.chat_id AND mm.message_id = cm.message_id) >= ?`
-    );
-    params.push(minPoints);
+    // minPoints now handled via ClickHouse
   }
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const limitClause = Number.isFinite(limit) && limit > 0 ? "LIMIT ?" : "";
@@ -725,10 +789,47 @@ function fetchMessagesForSet(options) {
     )
     .get(...(conditions.length ? params.slice(0, conditions.length) : []));
 
-  return { rows, total: totalRow?.cnt || 0 };
+  total = totalRow?.cnt || 0;
+  if (!useMinPoints) return { rows, total };
+
+  let countsForRows;
+  try {
+    countsForRows = await fetchMetricsCounts(rows);
+  } catch (err) {
+    console.error("ClickHouse points fetch failed", err);
+    return { rows: [], total: 0 };
+  }
+  rows = rows.filter((row) => (countsForRows.get(metricsKey(row.chat_id, row.message_id)) || 0) >= minPoints);
+
+  if (total > MINPOINTS_SCAN_LIMIT) {
+    console.warn(`minPoints scan capped at ${MINPOINTS_SCAN_LIMIT} rows`);
+    return { rows, total: rows.length };
+  }
+
+  const allIds = db
+    .prepare(
+      `
+      SELECT cm.chat_id, cm.message_id
+      FROM channel_messages cm
+      ${where}
+    `
+    )
+    .all(...(conditions.length ? params.slice(0, conditions.length) : []));
+  let countsAll;
+  try {
+    countsAll = await fetchMetricsCounts(allIds);
+  } catch (err) {
+    console.error("ClickHouse points fetch failed", err);
+    return { rows, total: rows.length };
+  }
+  total = allIds.reduce((acc, row) => {
+    const key = metricsKey(row.chat_id, row.message_id);
+    return acc + ((countsAll.get(key) || 0) >= minPoints ? 1 : 0);
+  }, 0);
+  return { rows, total };
 }
 
-function buildListResult(body) {
+async function buildListResult(body) {
   const ids = parseIdsList(body.ids || []);
   const minViews = Number(body.min_views);
   const maxViews = Number(body.max_views);
@@ -744,7 +845,7 @@ function buildListResult(body) {
     throw new Error("ids length must be <= 5000");
   }
 
-  const { rows, total } = fetchMessagesForSet({ ids, minViews, maxViews, fromDate, toDate, limit, minPoints });
+  const { rows, total } = await fetchMessagesForSet({ ids, minViews, maxViews, fromDate, toDate, limit, minPoints });
   if (!rows || rows.length === 0) {
     return { items: [], total: 0 };
   }
@@ -779,9 +880,9 @@ function buildListResult(body) {
   return { items, total };
 }
 
-function handleList(req, res, body) {
+async function handleList(req, res, body) {
   try {
-    const result = buildListResult(body);
+    const result = await buildListResult(body);
     return sendJson(res, 200, result);
   } catch (err) {
     console.error("handleList error", err);
@@ -792,7 +893,7 @@ const server = http.createServer(async (req, res) => {
   const { pathname, query } = url.parse(req.url, true);
   try {
     if (pathname === "/api/message" && req.method === "GET") {
-      return handleMetrics(req, res, query);
+      return await handleMetrics(req, res, query);
     }
     if (pathname === "/api/labels" && req.method === "GET") {
       return handleLabels(req, res, query);
@@ -814,7 +915,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (pathname === "/api/list" && req.method === "POST") {
       const body = await readJsonBody(req);
-      return handleList(req, res, body);
+      return await handleList(req, res, body);
     }
     if (pathname.startsWith("/api/sets")) {
       const handled = await handleSets(req, res, pathname, req.method);

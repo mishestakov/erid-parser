@@ -9,6 +9,7 @@
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
+const { createClickhouseClient } = require("../clickhouse");
 const {
   createClientWithDirs,
   login,
@@ -35,6 +36,20 @@ const ACCOUNTS_CONFIG_PATH = PUBLIC_SEARCH_ACCOUNTS_CONFIG;
 const STAR_SPEND = Number.isFinite(Number(process.env.PUBLIC_SEARCH_STAR_SPEND))
   ? Number(process.env.PUBLIC_SEARCH_STAR_SPEND)
   : 10;
+const CLICKHOUSE_METRICS_TABLE = process.env.CLICKHOUSE_METRICS_TABLE || "message_metrics";
+const CLICKHOUSE_INSERT_CHUNK = Number(process.env.CLICKHOUSE_INSERT_CHUNK || 5000);
+const METRICS_COLUMNS = [
+  "run_id",
+  "chat_id",
+  "message_id",
+  "ts",
+  "view_count",
+  "forward_count",
+  "reply_count",
+  "reactions_total",
+  "reactions_paid",
+  "reactions_free"
+];
 
 const DEFAULT_DAILY_FREE = Number.isFinite(Number(process.env.PUBLIC_SEARCH_DEFAULT_DAILY_FREE))
   ? Number(process.env.PUBLIC_SEARCH_DEFAULT_DAILY_FREE)
@@ -42,6 +57,7 @@ const DEFAULT_DAILY_FREE = Number.isFinite(Number(process.env.PUBLIC_SEARCH_DEFA
 
 const chatUsernames = new Map(); // chat_id -> username|null
 const chatFetches = new Map(); // chat_id -> Promise<void>
+const metricsBuffer = new Map(); // `${chat_id}:${message_id}` -> metrics row
 let shuttingDown = false;
 let runNumber = 0;
 let currentAccount = null;
@@ -49,6 +65,7 @@ let cancelSleep = null;
 let currentRunId = null;
 const allowedMessages = new Map(); // chat_id -> Set(message_id)
 const albumKeeper = new Map(); // `${chat_id}:${album_id}` -> message_id
+let clickhouse = null;
 
 function boolToInt(value) {
   return typeof value === "boolean" ? (value ? 1 : 0) : null;
@@ -302,22 +319,6 @@ function initDb(dbPath) {
       limits_json TEXT,
       limits_exceeded INTEGER DEFAULT 0
     );
-
-    CREATE TABLE IF NOT EXISTS message_metrics (
-      run_id INTEGER NOT NULL,
-      chat_id INTEGER NOT NULL,
-      message_id INTEGER NOT NULL,
-      ts INTEGER NOT NULL,
-      view_count INTEGER,
-      forward_count INTEGER,
-      reply_count INTEGER,
-      reactions_total INTEGER,
-      reactions_paid INTEGER,
-      reactions_free INTEGER,
-      PRIMARY KEY(run_id, chat_id, message_id)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_message_metrics_chat ON message_metrics(chat_id, message_id, ts);
   `);
 
   const insertChannel = db.prepare(`
@@ -429,45 +430,6 @@ function initDb(dbPath) {
     WHERE run_id = @run_id
   `);
 
-  const upsertMessageMetric = db.prepare(`
-    INSERT INTO message_metrics (
-      run_id, chat_id, message_id, ts, view_count, forward_count, reply_count, reactions_total, reactions_paid, reactions_free
-    ) VALUES (
-      @run_id, @chat_id, @message_id, @ts, @view_count, @forward_count, @reply_count, @reactions_total, @reactions_paid, @reactions_free
-    )
-    ON CONFLICT(run_id, chat_id, message_id) DO UPDATE SET
-      view_count = CASE
-        WHEN message_metrics.view_count IS NULL THEN excluded.view_count
-        WHEN excluded.view_count > COALESCE(message_metrics.view_count, -1) THEN excluded.view_count
-        ELSE message_metrics.view_count
-      END,
-      forward_count = CASE
-        WHEN message_metrics.forward_count IS NULL THEN excluded.forward_count
-        WHEN excluded.forward_count > COALESCE(message_metrics.forward_count, -1) THEN excluded.forward_count
-        ELSE message_metrics.forward_count
-      END,
-      reply_count = CASE
-        WHEN message_metrics.reply_count IS NULL THEN excluded.reply_count
-        WHEN excluded.reply_count > COALESCE(message_metrics.reply_count, -1) THEN excluded.reply_count
-        ELSE message_metrics.reply_count
-      END,
-      reactions_total = CASE
-        WHEN message_metrics.reactions_total IS NULL THEN excluded.reactions_total
-        WHEN excluded.reactions_total > COALESCE(message_metrics.reactions_total, -1) THEN excluded.reactions_total
-        ELSE message_metrics.reactions_total
-      END,
-      reactions_paid = CASE
-        WHEN message_metrics.reactions_paid IS NULL THEN excluded.reactions_paid
-        WHEN excluded.reactions_paid > COALESCE(message_metrics.reactions_paid, -1) THEN excluded.reactions_paid
-        ELSE message_metrics.reactions_paid
-      END,
-      reactions_free = CASE
-        WHEN message_metrics.reactions_free IS NULL THEN excluded.reactions_free
-        WHEN excluded.reactions_free > COALESCE(message_metrics.reactions_free, -1) THEN excluded.reactions_free
-        ELSE message_metrics.reactions_free
-      END;
-  `);
-
   const updateFoundCount = db.prepare(`
     UPDATE public_search
     SET
@@ -483,8 +445,7 @@ function initDb(dbPath) {
     bumpMessageCount: (chatId) => updateFoundCount.run({ chat_id: chatId }),
     insertRun: (accountName) => insertRun.run({ account_name: accountName, limits_json: null, limits_exceeded: 0 }),
     updateRun: (runId, limitsJson, limitsExceeded) =>
-      updateRun.run({ run_id: runId, limits_json: limitsJson, limits_exceeded: limitsExceeded ? 1 : 0 }),
-    upsertMessageMetric: (row) => upsertMessageMetric.run(row)
+      updateRun.run({ run_id: runId, limits_json: limitsJson, limits_exceeded: limitsExceeded ? 1 : 0 })
   };
 }
 
@@ -669,6 +630,41 @@ function normalizeMessageRow(row) {
   };
 }
 
+function normalizeMetricValue(value) {
+  return Number.isFinite(value) ? Math.trunc(value) : null;
+}
+
+function recordMetricsSnapshot(row) {
+  if (currentRunId === null) return;
+  if (!Number.isFinite(row?.chat_id) || !Number.isFinite(row?.message_id)) return;
+  const key = `${row.chat_id}:${row.message_id}`;
+  metricsBuffer.set(key, {
+    run_id: Math.trunc(currentRunId),
+    chat_id: Math.trunc(row.chat_id),
+    message_id: Math.trunc(row.message_id),
+    ts: Math.floor(Date.now() / 1000),
+    view_count: normalizeMetricValue(row.view_count),
+    forward_count: normalizeMetricValue(row.forward_count),
+    reply_count: normalizeMetricValue(row.reply_count),
+    reactions_total: normalizeMetricValue(row.reactions_total),
+    reactions_paid: normalizeMetricValue(row.reactions_paid),
+    reactions_free: normalizeMetricValue(row.reactions_free)
+  });
+}
+
+async function flushMetricsBuffer() {
+  if (!clickhouse || metricsBuffer.size === 0) return;
+  const rows = Array.from(metricsBuffer.values());
+  const chunkSize = Number.isFinite(CLICKHOUSE_INSERT_CHUNK) && CLICKHOUSE_INSERT_CHUNK > 0
+    ? CLICKHOUSE_INSERT_CHUNK
+    : 5000;
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const chunk = rows.slice(i, i + chunkSize);
+    await clickhouse.insertJsonEachRow(CLICKHOUSE_METRICS_TABLE, chunk, METRICS_COLUMNS);
+  }
+  metricsBuffer.clear();
+}
+
 function isAlbumDuplicate(message) {
   const albumId = message?.media_album_id;
   const chatId = message?.chat_id;
@@ -726,21 +722,7 @@ function upsertMessages(dbOps, messages) {
       reactions_free: normalized.reactions?.free
     });
     dbOps.upsertMessage(normalizedRow);
-    if (currentRunId !== null) {
-      const snapshot = {
-        run_id: currentRunId,
-        chat_id: normalizedRow.chat_id,
-        message_id: normalizedRow.message_id,
-        ts: Math.floor(Date.now() / 1000),
-        view_count: normalizedRow.view_count,
-        forward_count: normalizedRow.forward_count,
-        reply_count: normalizedRow.reply_count,
-        reactions_total: normalizedRow.reactions_total,
-        reactions_paid: normalizedRow.reactions_paid,
-        reactions_free: normalizedRow.reactions_free
-      };
-      dbOps.upsertMessageMetric(snapshot);
-    }
+    recordMetricsSnapshot(normalizedRow);
     chatIds.add(normalized.chat_id);
   }
   for (const chatId of chatIds) {
@@ -1023,6 +1005,14 @@ async function main() {
   await ensureDirectories();
   await fs.mkdir(path.dirname(dbPath), { recursive: true });
   const dbOps = initDb(dbPath);
+  clickhouse = createClickhouseClient();
+  try {
+    await clickhouse.ensureMessageMetricsTable(CLICKHOUSE_METRICS_TABLE);
+  } catch (err) {
+    console.error(`ClickHouse init failed: ${err.message || err}`);
+    process.exitCode = 1;
+    return;
+  }
   const targets = new Set();
   let stopRequested = false;
   let detachUpdates = null;
@@ -1170,10 +1160,12 @@ async function main() {
 
       runNumber += 1;
       currentRunId = null;
+      metricsBuffer.clear();
       console.log(`[run ${runNumber}] start (account=${currentAccount.name || "default"}${useStars ? ", stars=1" : ""})`);
       try {
         const info = dbOps.insertRun(currentAccount.name || "default");
-        currentRunId = info?.lastInsertRowid ?? null;
+        const runId = Number(info?.lastInsertRowid);
+        currentRunId = Number.isFinite(runId) ? runId : null;
       } catch (err) {
         console.warn(`[run ${runNumber}] не удалось создать запись run: ${err.message || err}`);
       }
@@ -1203,6 +1195,13 @@ async function main() {
         } catch (err) {
           console.warn(`[run ${runNumber}] не удалось обновить run: ${err.message || err}`);
         }
+      }
+      currentRunId = null;
+      try {
+        await flushMetricsBuffer();
+      } catch (err) {
+        console.error(`[run ${runNumber}] не удалось записать метрики в ClickHouse: ${err.message || err}`);
+        throw err;
       }
       const nextFreeAfter = Number(limits?.next_free_query_in);
       const starCostAfter =
@@ -1313,6 +1312,11 @@ async function main() {
     process.exitCode = 1;
   } finally {
     shuttingDown = true;
+    try {
+      await flushMetricsBuffer();
+    } catch (err) {
+      console.warn(`flush metrics failed: ${err.message || err}`);
+    }
     try {
       if (detachUpdates) detachUpdates();
     } catch (_) {

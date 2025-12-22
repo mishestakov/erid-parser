@@ -4,11 +4,11 @@
 
 ## Структура
 - `config/paths.js` — читает `.env`, задаёт дефолтные пути (по умолчанию в `data/`), прокидывает env переменные.
-- `data/` — runtime данные: SQLite (`data/db/public-search.sqlite`), `growth-sets.json`, TDLib `data/tdlib/*`, выгрузки ссылок, конфиг аккаунтов. В гите игнорируется.
+- `data/` — runtime данные: SQLite (`data/db/public-search.sqlite`), `growth-sets.json`, TDLib `data/tdlib/*`, выгрузки ссылок, конфиг аккаунтов, ClickHouse `data/clickhouse`. В гите игнорируется.
 - `tdlib-helpers.js` — обёртка вокруг `tdl` (login, создание клиента, delay, ensureDirectories).
 - `scripts/`:
-  - `search-public-posts.js` — сканер `searchPublicPosts` с мультиаккаунтами, SQLite (`public_search`, `channel_messages`, `runs`, `message_metrics`), сохранением ссылок.
-  - `metrics-visualize.js` — HTTP API + статика growth viewer/builder, хранит сохранённые подборки в `data/growth-sets.json`, использует ту же SQLite.
+  - `search-public-posts.js` — сканер `searchPublicPosts` с мультиаккаунтами, SQLite (`public_search`, `channel_messages`, `runs`), метрики `message_metrics` в ClickHouse, сохранение ссылок.
+  - `metrics-visualize.js` — HTTP API + статика growth viewer/builder, сохранённые подборки в `data/growth-sets.json`, метрики читаются из ClickHouse.
   - `init-accounts.js` — создаёт конфиг аккаунтов для публичного поиска.
 - `visualizer/` — фронтенд growth builder/viewer (`growth-builder/viewer.html|js|css`, редирект `growth.html`).
 - `tmp/` — резерв под временные файлы (если понадобится).
@@ -26,6 +26,7 @@ npm run init-accounts       # создать/перезаписать конфи
 - TDLib: `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TDLIB_PATH` (опциональный путь к tdjson), `TDLIB_DATABASE_DIR`, `TDLIB_FILES_DIR`.
 - Публичный поиск: `PUBLIC_SEARCH_QUERY` (по умолчанию `erid`), `PUBLIC_SEARCH_LIMIT`, `PUBLIC_SEARCH_DELAY_MS`, `PUBLIC_SEARCH_STAR_SPEND`, `PUBLIC_SEARCH_DB_PATH`, `PUBLIC_SEARCH_ACCOUNTS_CONFIG`.
 - Визуализатор: `PORT` (по умолчанию 3100), `PUBLIC_SEARCH_DB_PATH`, `GROWTH_SETS_PATH`.
+- ClickHouse (метрики): `CLICKHOUSE_URL` (по умолчанию `http://localhost:8123`), `CLICKHOUSE_DATABASE`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_METRICS_TABLE`, `CLICKHOUSE_INSERT_CHUNK`, `CLICKHOUSE_READ_CHUNK`, `CLICKHOUSE_MINPOINTS_SCAN_LIMIT`.
 
 ## Мини-setup
 0) Скопировать `.env.example` в `.env`, вписать свои `TELEGRAM_API_ID` и `TELEGRAM_API_HASH` (остальное можно оставить по умолчанию).
