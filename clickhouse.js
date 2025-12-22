@@ -99,7 +99,7 @@ function createClickhouseClient(options = {}) {
         run_id UInt64,
         chat_id Int64,
         message_id Int64,
-        ts DateTime,
+        ts DateTime('UTC'),
         view_count Nullable(UInt32),
         forward_count Nullable(UInt32),
         reply_count Nullable(UInt32),

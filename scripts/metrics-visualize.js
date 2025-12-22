@@ -507,7 +507,7 @@ async function handleSets(req, res, pathname, method) {
     const body = await readJsonBody(req);
     const name = (body.name || "").trim();
     if (!name) return sendJson(res, 400, { error: "name is required" });
-    const listResult = buildListResult(body.filters || body);
+    const listResult = await buildListResult(body.filters || body);
     const items = Array.isArray(listResult.items) ? listResult.items : [];
     const total = Number(listResult.total) || items.length;
     const set = {
